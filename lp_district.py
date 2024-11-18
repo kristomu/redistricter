@@ -18,7 +18,9 @@
 from parse_dbf import get_state_names, get_census_block_data
 from scipy.spatial import cKDTree
 import numpy as np
+import cvxpy as cp
 
+import time
 import pathlib
 import itertools
 import subprocess
@@ -120,7 +122,7 @@ lons = np.linspace(minimum_point[1], maximum_point[1], grid_axis_points)
 
 # Pick some census blocks as district centers
 # Uncomment the fixed definition to use blocks with good properties.
-def redistrict(num_districts, district_indices):
+def redistrict(num_districts, district_indices, verbose=False):
 
 	grid_coords = []
 	grid_latlon = []
@@ -184,79 +186,55 @@ def redistrict(num_districts, district_indices):
 
 	'''
 
-	# Let's do it in GMPL format first. I'll do the Ax,b format later.
+	# cvxopt testing
 
-	total_population = sum(block_populations)
-	filename = f"redistricting_{np.random.randint(0, 2**63)}.mod"
+	assign = cp.Variable((num_districts, num_gridpoints))
 
-	redist = open(filename, "w")
+	total_population = int(sum(block_populations))
 
-	# LP part (0)
-
-	for district_idx in range(num_districts):
-		for region_pt_idx in range(num_gridpoints):
-			redist.write(f"var assn_d{district_idx}p{region_pt_idx} >= 0;\n")
-
-	# LP part (1)
-
-	objective_funct = ""
+	# Objective function (LP part 1)
+	squared_distances_to_center = 0
 
 	for district_idx in range(num_districts):
-		for region_pt_idx in range(num_gridpoints):
-			objective_funct += f"assn_d{district_idx}p{region_pt_idx} * " + \
-				f"{sq_district_point_dist[district_idx][region_pt_idx]} + "
-
-	objective_funct = objective_funct[:-3] + ";" # remove trailing space and plus
-
-	redist.write(f"minimize squared_dist: {objective_funct}\n")
+		squared_distances_to_center += sq_district_point_dist[district_idx] @ assign[district_idx]
 
 	# LP part (2)
-
-	for district_idx in range(num_districts):
-		for region_pt_idx in range(num_gridpoints):
-			redist.write(f"s.t. bound_d{district_idx}p{region_pt_idx}: " + \
-				f"assn_d{district_idx}p{region_pt_idx} <= 1;\n")
+	constraints = []
+	constraints.append(assign <= 1)
+	constraints.append(0 <= assign)
 
 	# LP part (3)
 	# We move the n term to the left-hand side to limit floating point problems.
 
-	for district_idx in range(num_districts):
-		pop_constraint = ""
-		for region_pt_idx in range(num_gridpoints):
-			pop_constraint += f"{num_districts} * " + \
-				f"assn_d{district_idx}p{region_pt_idx} * " + \
-				f"{block_populations[region_pt_idx]} + "
-			
-		pop_constraint = pop_constraint[:-3]
+	pop_constraints = []
 
-		redist.write(f"s.t. pop_bound_d{district_idx}: {pop_constraint} = {total_population};\n")
+	for district_idx in range(num_districts):
+		pop_constraint = int(num_districts) * (assign[district_idx] @ block_populations) == int(total_population)
+		pop_constraints.append(pop_constraint)
 
 	# LP part (4)
 
 	# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+	assign_constraints = []
+
 	for region_pt_idx in range(num_gridpoints):
-		assign_constraint = ""
-		for district_idx in range(num_districts):
-			assign_constraint += f"assn_d{district_idx}p{region_pt_idx} + ";
+		assign_constraint = cp.sum(assign[:,region_pt_idx]) == 1
+		assign_constraints.append(assign_constraint)
 
-		assign_constraint = assign_constraint[:-3]
+	constraints += pop_constraints + assign_constraints
 
-		redist.write(f"s.t. assign_fully_p{region_pt_idx}: {assign_constraint} = 1;\n")
+	prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
 
-	# 7. Solve it.
-
-	redist.close()
-
-	# https://stackoverflow.com/a/707001
-
-	solver = subprocess.Popen(["glpsol", "--math", filename],
-		stdout=subprocess.PIPE)
-	(output, error) = solver.communicate()
-	
-	pathlib.Path(filename).unlink()
-
-	objective_value_line = [x for x in output.decode().split("\n") if len(x) > 0 and x[0] == '*'][0]
-	objective_value = objective_value_line.split()[4]
+	# cvxpy has a major bottleneck in ConeMatrixStuffing. The given parameters below
+	# mitigate the problem somewhat, but it's still quite slow for larger problems
+	# (try e.g. grid_axis_points=200.)
+	# Even at default settings (grid_axis_points=20), the old GLPK approach is
+	# faster (4% faster redistrict() call); but we need to read the assignment
+	# values after solving, which is pretty hard to do through a GLPK invocation.
+	# I may replace this with a better solver later.
+	prob.solve(verbose=verbose, ignore_dpp=True,
+		canon_backend=cp.SCIPY_CANON_BACKEND)
+	objective_value = prob.value
 
 	return objective_value, district_indices
 
@@ -281,4 +259,4 @@ while True:
 	district_indices = np.array(sorted(district_indices))
 	objective_value, district_indices = redistrict(num_districts, district_indices)
 
-	print(f"{objective_value} for {district_indices}")
+	print(f"{objective_value:.9e} for {district_indices}")
