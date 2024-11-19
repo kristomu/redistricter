@@ -80,6 +80,11 @@ def haversine_centers(centers_latlon, other_points):
 
 	return np.array(list(each_center_iter))
 
+num_districts = 8
+# Use this if you want a selection with good performance. Found by earlier
+# testing.
+district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
+
 # 1. Get coordinates and populations
 #	  Use Colorado for now.
 state_names = get_state_names()
@@ -111,152 +116,184 @@ for block in block_data:
 
 # 3. Create a plate carée grid of the desired granularity.
 
-# I need to clean this up; it's getting a bit messy what's radians,
-# what's latitudes and longitudes, what corresponds to districts,
-# and what corresponds to grid points.
+# First determine the aspect ratio. (These are off by about 10 km for
+# Colorado, find out why...) (Oh, apparently it's not actually
+# rectangular.)
 
-grid_axis_points = 20		# will produce n^2 points
+NS_distance = haversine_np(minimum_point[0], minimum_point[1],
+	maximum_point[0], minimum_point[1])
+EW_distance = haversine_np(minimum_point[0], minimum_point[1],
+	minimum_point[0], maximum_point[1])
 
-lats = np.linspace(minimum_point[0], maximum_point[0], grid_axis_points)
-lons = np.linspace(minimum_point[1], maximum_point[1], grid_axis_points)
+grid_points = 400
 
-# Pick some census blocks as district centers
-# Uncomment the fixed definition to use blocks with good properties.
-def redistrict(num_districts, district_indices, verbose=False):
+# Get roughly the desired number of grid points at roughly the right
+# aspect ratio by rounding off square roots.
 
-	grid_coords = []
-	grid_latlon = []
+long_axis_points = int(np.round(np.sqrt(grid_points) * EW_distance/NS_distance))
+lat_axis_points = int(np.round(np.sqrt(grid_points) * NS_distance/EW_distance))
 
-	for lat, lon in itertools.product(lats, lons):
-		grid_coords.append(
-			LLHtoECEF(np.radians(lat), np.radians(lon), mean_radius))
-		grid_latlon.append([lat, lon])
+# TODO: Make this rectangular so that we know if we get the axes right
+# later.
 
-	district_coords = []
-	district_latlon = []
+lats = np.linspace(minimum_point[0], maximum_point[0], lat_axis_points)
+lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
 
-	for index in district_indices:
-		lat = block_data[index]["lat"]
-		lon = block_data[index]["long"]
-		district_coords.append(LLHtoECEF(lat, lon, mean_radius))
-		district_latlon.append([lat, lon])
+grid_coords = []
+grid_latlon = []
 
-	# We need the grid to include the district points so that
-	# people close to the center get assigned to it. (Or do we?)
+for lat, lon in itertools.product(lats, lons):
+	grid_coords.append(
+		LLHtoECEF(np.radians(lat), np.radians(lon), mean_radius))
+	grid_latlon.append([lat, lon])
 
-	grid_coords += district_coords
-	grid_latlon += district_latlon
+district_coords = []
+district_latlon = []
 
-	grid_coords = np.array(grid_coords)
-	grid_latlon = np.array(grid_latlon)
+for index in district_indices:
+	lat = block_data[index]["lat"]
+	lon = block_data[index]["long"]
+	district_coords.append(LLHtoECEF(lat, lon, mean_radius))
+	district_latlon.append([lat, lon])
 
-	district_coords = np.array(district_coords)
-	district_latlon = np.array(district_latlon)
+# We need the grid to include the district points so that
+# people close to the center get assigned to it. (Or do we?) (a)
 
-	# 4. Assign each block to its closest center.
-	# This is somewhat of a hack - could do
-	# https://stackoverflow.com/questions/10549402/kdtree-for-longitude-latitude
-	# instead. Later.
-	points_tree = cKDTree(grid_coords)
-	num_gridpoints = len(grid_coords)
+grid_coords += district_coords
+grid_latlon += district_latlon
 
-	block_populations = np.zeros(num_gridpoints, np.int64)
+grid_coords = np.array(grid_coords)
+grid_latlon = np.array(grid_latlon)
 
-	for block in block_data:
-		block["center"] = points_tree.query(block["coords"])[1]
-		block_populations[block["center"]] += block["population"]
+district_coords = np.array(district_coords)
+district_latlon = np.array(district_latlon)
 
-	# 5. Create pairwise distances between centers and points.
-	# We need squared distances because the objective is to minimize the sum of
-	# squared distances - we want a k-means generalization, not a k-medians.
-	sq_district_point_dist = haversine_centers(
-		district_latlon, grid_latlon)**2
+# 4. Assign each block to its closest center.
+# This is somewhat of a hack - could do
+# https://stackoverflow.com/questions/10549402/kdtree-for-longitude-latitude
+# instead. Later.
+points_tree = cKDTree(grid_coords)
+num_gridpoints = len(grid_coords)
 
-	# 6. Create the linear program.
-	'''
+block_populations = np.zeros(num_gridpoints, np.int64)
 
-	minimize sum over coordinates x,y in the region:
-	    sum over districts i = 1..n:
-	(1)        assign[i, x, y] * dist^2(centerx_i, centery_i, x, y)
+for block in block_data:
+	block["center"] = points_tree.query(block["coords"])[1]
+	block_populations[block["center"]] += block["population"]
 
-	subject to
-	(2)    for all i, x, y: 0 <= assign[i, x, y] <= 1
-	(3)    for all i: (sum over x, y: assign[i, x, y] * pop[x, y]) = tpop/n
-	(4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+# 5. Create pairwise distances between centers and points.
+# We need squared distances because the objective is to minimize the sum of
+# squared distances - we want a k-means generalization, not a k-medians.
+sq_district_point_dist = haversine_centers(
+	district_latlon, grid_latlon)**2
 
-	'''
+# 6. Create the linear program.
+'''
 
-	# cvxopt testing
+minimize sum over coordinates x,y in the region:
+    sum over districts i = 1..n:
+(1)        assign[i, x, y] * dist^2(centerx_i, centery_i, x, y)
 
-	assign = cp.Variable((num_districts, num_gridpoints))
+subject to
+(2)    for all i, x, y: 0 <= assign[i, x, y] <= 1
+(3)    for all i: (sum over x, y: assign[i, x, y] * pop[x, y]) = tpop/n
+(4)    for all x, y: (sum over i: assign[i, x, y]) = 1
 
-	total_population = int(sum(block_populations))
+'''
 
-	# Objective function (LP part 1)
-	squared_distances_to_center = 0
+# cvxopt testing
 
-	for district_idx in range(num_districts):
-		squared_distances_to_center += sq_district_point_dist[district_idx] @ assign[district_idx]
+assign = cp.Variable((num_districts, num_gridpoints))
 
-	# LP part (2)
-	constraints = []
-	constraints.append(assign <= 1)
-	constraints.append(0 <= assign)
+total_population = int(sum(block_populations))
 
-	# LP part (3)
-	# We move the n term to the left-hand side to limit floating point problems.
+# Objective function (LP part 1)
+squared_distances_to_center = 0
 
-	pop_constraints = []
+for district_idx in range(num_districts):
+	squared_distances_to_center += sq_district_point_dist[district_idx] @ assign[district_idx]
 
-	for district_idx in range(num_districts):
-		pop_constraint = int(num_districts) * (assign[district_idx] @ block_populations) == int(total_population)
-		pop_constraints.append(pop_constraint)
+# LP part (2)
+constraints = []
+constraints.append(assign <= 1)
+constraints.append(0 <= assign)
 
-	# LP part (4)
+# LP part (3)
+# We move the n term to the left-hand side to limit floating point problems.
 
-	# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
-	assign_constraints = []
+pop_constraints = []
 
-	for region_pt_idx in range(num_gridpoints):
-		assign_constraint = cp.sum(assign[:,region_pt_idx]) == 1
-		assign_constraints.append(assign_constraint)
+for district_idx in range(num_districts):
+	pop_constraint = int(num_districts) * (assign[district_idx] @ block_populations) == int(total_population)
+	pop_constraints.append(pop_constraint)
 
-	constraints += pop_constraints + assign_constraints
+# LP part (4)
 
-	prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
+# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+assign_constraints = []
 
-	# cvxpy has a major bottleneck in ConeMatrixStuffing. The given parameters below
-	# mitigate the problem somewhat, but it's still quite slow for larger problems
-	# (try e.g. grid_axis_points=200.)
-	# Even at default settings (grid_axis_points=20), the old GLPK approach is
-	# faster (4% faster redistrict() call); but we need to read the assignment
-	# values after solving, which is pretty hard to do through a GLPK invocation.
-	# I may replace this with a better solver later.
-	prob.solve(verbose=verbose, ignore_dpp=True,
-		canon_backend=cp.SCIPY_CANON_BACKEND)
-	objective_value = prob.value
+for region_pt_idx in range(num_gridpoints):
+	assign_constraint = cp.sum(assign[:,region_pt_idx]) == 1
+	assign_constraints.append(assign_constraint)
 
-	return objective_value, district_indices
+constraints += pop_constraints + assign_constraints
 
-	# Now suppose we have an array of assignment loads so that
-	# assign[district][gridpoint] = fraction of this gridpoint belonging to that district.
-	# And I want to plot them.
-	# Probably I would take the lazy Plate carrée approach because inverting a map
-	# projection is not my idea of a good time.
+prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
 
-	# Perhaps https://stackoverflow.com/questions/78375583/draw-a-filled-polygon-with-fill-color-inside-the-outline
+# cvxpy has a major bottleneck in ConeMatrixStuffing. The given parameters below
+# mitigate the problem somewhat, but it's still quite slow for larger problems
+# (try e.g. grid_points=40000.)
+# Even at default settings (grid_points=20), the old GLPK approach is
+# faster (4% faster redistrict() call); but we need to read the assignment
+# values after solving, which is pretty hard to do through a GLPK invocation.
+# I may replace this with a better solver later.
+prob.solve(verbose=True, ignore_dpp=True,
+	canon_backend=cp.SCIPY_CANON_BACKEND, solver=cp.SCIP)
+objective_value = prob.value
 
-# STUB: Just do the districting over and over. The redistrict function will list
-# the objective value (smaller is better).
+# Get the values: each row is a district, each cell values[d][p] corresponds to
+# how much of grid area p's population has been allocated to that district.
 
-while True:
-	num_districts = 8
-	# Use this if you want a selection with good performance. Found by earlier
-	# testing.
-	# district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
+# We want to figure out which cells have been assigned to which districts, as well
+# as which cells are uncertain. The cells we can't be sure about are those that
+# have fractional values, as well as all of their direct neighbors.
 
-	district_indices = np.random.randint(0, len(block_data), size=num_districts)
-	district_indices = np.array(sorted(district_indices))
-	objective_value, district_indices = redistrict(num_districts, district_indices)
 
-	print(f"{objective_value:.9e} for {district_indices}")
+# Interior point solvers only solve to a particular accuracy.
+# TODO: Get this tolerance from the solution itself.
+epsilon = 1e-15
+
+assign_values = np.array([[var.value for var in row] for row in assign])
+directly_certain = np.max(assign_values, axis=0) > (1-epsilon)
+
+# Which district belongs to which point. Regions with multiple districts
+# are set to -1.
+claimants = np.argmax(assign_values, axis=0)
+claimants[directly_certain == False] = -1
+
+# Now we could comment out (a) and do something like
+# print(np.reshape(claimants, (-1, long_axis_points)))
+# but this will be mirrored north to south and also has strange point
+# inclusions of otherwise contiguous districts. I have to find out what's
+# going on using a better rendering method.
+
+# Things that need to be done:
+# - For each point, find the points whose Voronoi cells touch the point's.
+# - If the current point is fractionally assigned, set it and all its neighbors
+#		to unknown
+# - If the current point has a neighbor that belongs to another district, set
+#		both to unknown
+# - Otherwise, assign that point to the district (the assignment is definite).
+
+# Then rerun on some grid over the unknown points.
+# But I'll do that *after* I've got rendering working, because my quick and dirty
+# tests seem to suggest something pretty bizarre is going on. Printing claimant
+# arrays gives a district containing either both of Denver and Fort Collins or
+# both of Denver and Colorado Springs; and either configuration would drastically
+# exceed the population limit.
+
+# It's possible that the linear program doesn't even guarantee contiguity:
+# consider a high density city near the middle of a district, with all other
+# district centers far away. Could it be that claiming only part of the city and
+# then a bunch of surrounding land would decrease the penalty for the other
+# districts so much that it's worth it? I'll have to investigate.
