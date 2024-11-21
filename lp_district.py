@@ -81,6 +81,20 @@ def haversine_centers(centers_latlon, other_points):
 	return np.array(list(each_center_iter))
 
 
+def print_claimant_array(claimants):
+	# Because higher latitudes come later but correspond to
+	# a more northernly posiiton, the array will be "upside down".
+	# So print the rows in reverse order.
+	# (Don't print stuff near or south of the equator with this!)
+	for row in np.flip(claimants, axis=0):
+		printout_string = ""
+		for cell in row:
+			if cell == -1:
+				printout_string += "."
+			else:
+				printout_string += str(cell)
+		print(printout_string[:-1])
+
 # --- K-means optimization problems -----
 
 # Apparently hard-capacitated K-means may fail to give compact
@@ -112,6 +126,8 @@ def hard_capacitated_kmeans(num_districts, num_gridpoints,
 	# Objective function (LP part 1)
 	squared_distances_to_center = 0
 
+	# Unlike uncapacitated, the objective function should not multiply by the
+	# block population.
 	for district_idx in range(num_districts):
 		squared_distances_to_center += sq_district_point_dist[district_idx] @ assign[district_idx]
 
@@ -275,8 +291,8 @@ def redistrict(num_districts, district_indices, verbose=False,
 	# We need the grid to include the district points so that
 	# people close to the center get assigned to it. (Or do we?) (a)
 
-	grid_coords += district_coords
-	grid_latlon += district_latlon
+	#grid_coords += district_coords
+	#grid_latlon += district_latlon
 
 	grid_coords = np.array(grid_coords)
 	grid_latlon = np.array(grid_latlon)
@@ -304,9 +320,7 @@ def redistrict(num_districts, district_indices, verbose=False,
 		district_latlon, grid_latlon)**2
 
 	# 6. Create the linear program.
-
-	# cvxopt testing
-
+	
 	assign, prob, norm_divisor = uncapacitated_kmeans(num_districts,
 		num_gridpoints, block_populations, sq_district_point_dist)
 
@@ -362,10 +376,11 @@ def redistrict(num_districts, district_indices, verbose=False,
 	claimants = np.argmax(assign_values, axis=0)
 	claimants[directly_certain == False] = -1
 
-	# For some reason, this is mirrored north to south. TODO: Find out why.
-	print(np.reshape(claimants, (-1, long_axis_points)))
+	# See the function for why this 2D claimant array is upside down
+	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
+	print_claimant_array(two_dim_claimants)
 
-	return objective_value, district_indices
+	return objective_value, district_indices, relative_stddev
 
 # Things that need to be done if we want to refine things:
 # - For each point, find the points whose Voronoi cells touch the point's.
@@ -400,17 +415,41 @@ def redistrict(num_districts, district_indices, verbose=False,
 # 400 grid points, 8 districts = 10 million constraints. In addition, it
 # doesn't seem to be implementable, even in theory, without using MIP.
 
-while True:
-	num_districts = 8
-	# Use this if you want a selection with good performance. Found by earlier
-	# testing.
-	# district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
-	# or this: (from uncapacitated)
-	# district_indices = [2995, 42888, 74000, 106266, 133597, 136444, 136963, 137608]
+def run(district_indices=None):
 
-	district_indices = np.random.randint(0, len(block_data), size=num_districts)
-	district_indices = np.array(sorted(district_indices))
-	objective_value, district_indices, relative_stddev = redistrict(
-		num_districts, district_indices, print_claimants=False)
+	if district_indices is None:
+		specified_district = False
+	else:
+		specified_district = True
 
-	print(f"{objective_value:.4f}, rel err: {relative_stddev:.4f}, {district_indices}")
+	while True:
+		num_districts = 8
+
+		if not specified_district:
+			district_indices = np.random.randint(0, len(block_data),
+				size=num_districts)
+
+		district_indices = np.array(sorted(district_indices))
+		objective_value, district_indices, relative_stddev = redistrict(
+			num_districts, district_indices,
+			print_claimants=specified_district)
+
+		print(f"{objective_value:.4f}, rel err: "
+			f"{relative_stddev:.4f}, {district_indices}")
+
+		if specified_district:
+			return
+
+district_indices = None
+
+# Specify a district here if you want to investigate one. Potential candidates
+# include:
+
+# Good HCKM scores:
+# district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
+
+# Good uncapacitated scores or relative std devs:
+# district_indices = [30054, 47476, 59892, 61154, 72719, 98886, 120521,134888] #(score)
+# district_indices = [26905, 28861, 65810, 71157, 88867, 104151,114789,138225] #stddev
+
+run(district_indices)
