@@ -1,6 +1,8 @@
 import cvxpy as cp
 import numpy as np
 
+from tqdm import tqdm
+
 '''
 This module contains classes for constructing various types of k-means problems.
 
@@ -19,11 +21,133 @@ other relevant parameters (like the assignment variables) of their object.
 
 '''
 
+# Auxiliary: compactness constraints for hard capacitated k-means. There are two
+# types: a relaxed constraint that doesn't need binary variables, and an exact
+# constraint that does.
+
+# To make the signatures match up, we use binary variables for both even though
+# the relaxed version doesn't need them. The MIP preprocessor should detect this
+# and do the right thing. TODO: add these to the object itself and use self.assign
+# and/or self.assign_binary as appropriate.
+
+# Both are very slow and introduce a ton of constraints. They scale
+# as num districts^2 * num points^2 - it's going to be real fun when
+# we get to California...
+
+def HCKM_relaxed_compactness(num_districts, num_gridpoints,
+		district_point_dist, assign_binary, show_progress=True):
+
+	compactness_constraints = []
+	estimated_num_constraints = num_districts * (num_districts-1) / 2 * \
+		num_gridpoints * (num_gridpoints-1)
+
+	if show_progress:
+		pbar = tqdm(total = estimated_num_constraints)
+		write = lambda string: pbar.write(string)
+		update = lambda num_processed: pbar.update(num_processed)
+	else:
+		write = lambda string: None
+		update = lambda num_processed: None
+
+	for district_one in range(num_districts):
+		write(str(district_one))
+		for district_two in range(district_one+1, num_districts):
+			write(f"\t{district_two}")
+			for x in range(num_gridpoints):
+				x_to_d1 = district_point_dist[district_one][x]
+				x_to_d2 = district_point_dist[district_two][x]
+
+				# TODO: Explanation here about how this is a relaxation
+
+				if x_to_d1 > x_to_d2:
+					update(num_gridpoints)
+					continue
+
+				for y in range(num_gridpoints):
+					update(1)
+					if x == y: continue
+					y_to_d1 = district_point_dist[district_one][y]
+					y_to_d2 = district_point_dist[district_two][y]
+
+					if y_to_d1 < y_to_d2: continue
+
+					compactness_constraints.append(
+						x_to_d1 * assign_binary[district_one][x] + \
+						y_to_d2 * assign_binary[district_two][y] <= \
+						x_to_d2 * assign_binary[district_one][x] + \
+						y_to_d1 * assign_binary[district_two][y])
+
+					# Another attempt can be found below; it doesn't work,
+					# but when I mistyped it as x, y, x, y, which is
+					# essentially a NOP, that made cvxpy crash... Maybe
+					# make a bug example for this later.
+					'''
+					compactness_constraints.append(
+						assign[district_one][x] + \
+						assign[district_two][y] >= \
+						assign[district_one][y] + \
+						assign[district_two][x])
+					'''
+	if show_progress:
+		pbar.close()
+
+	return compactness_constraints
+
+def HCKM_exact_compactness(num_districts, num_gridpoints,
+		district_point_dist, assign_binary, show_progress=True):
+
+	compactness_constraints = []
+	estimated_num_constraints = num_districts * (num_districts-1) / 2 * \
+		num_gridpoints **2
+
+	if show_progress:
+		pbar = tqdm(total = estimated_num_constraints)
+		write = lambda string: pbar.write(string)
+		update = lambda num_processed: pbar.update(num_processed)
+	else:
+		write = lambda string: None
+		update = lambda num_processed: None
+
+	### Compactness constraints
+	### These are from https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
+
+	for district_one in range(num_districts):
+		write(str(district_one))
+		for district_two in range(district_one+1, num_districts):
+			for x in range(num_gridpoints):
+				x_to_d1 = district_point_dist[district_one][x]
+				x_to_d2 = district_point_dist[district_two][x]
+
+				for y in range(num_gridpoints):
+					update(1)
+					if x == y: continue
+					y_to_d1 = district_point_dist[district_one][y]
+					y_to_d2 = district_point_dist[district_two][y]
+
+					# TODO: Strictly speaking, we should be maximally
+					# generous since we're working on a low res version
+					# of the problem. So we should choose x and y points
+					# to minimize (x_to_d1 + y_to_d2 - x_to_d2 - y_to_d1).
+
+					# If we could benefit by swapping d1 and d2's
+					# allocations of these points...
+					if x_to_d1 + y_to_d2 > x_to_d2 + y_to_d1:
+						# then that allocation mustn't happen.
+						compactness_constraints.append(
+							assign_binary[district_one][x] + \
+							assign_binary[district_two][y] <= 1)
+
+	if show_progress:
+		pbar.close()
+
+	return compactness_constraints
+
 class HardCapacitatedKMeans:
 	def __init__(self):
 		self._name = "Hard capacitated k-means"
 		self.assign = None
 		self.objective_scaling_divisor = 1
+		self.get_compactness_constraints = lambda a, b, c, d: []
 
 	@property
 	def name(self):
@@ -40,14 +164,29 @@ class HardCapacitatedKMeans:
 
 		subject to
 		(2)    for all i, p: 0 <= assign[i, p] <= 1
+		(2b)	(if using binary variables)
+				assign_binary[i, p] >= assign[i, p]
+				assign_binary[i, p] <= M * assign[i, p]
 		(3)    for all i: (sum over x, y: assign[i, x, y] * pop[x, y]) <= tpop/n
 		(4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+
+		If we are also using compactness constraints, we need binary variables
+		that are 0 when the corresponding assign variable is zero, 1 when positive.
+		We'll define them anyway; if we're not using compactness constraints,
+		the solver should just discard the binary variables.
+
+		TODO? A "using compactness constraint" parameter so we don't have
+		to do that?
 
 		'''
 
 		sq_district_point_dist = district_point_dist ** 2
 
 		self.assign = cp.Variable((num_districts, num_gridpoints))
+
+		# For compactness constraints.
+		self.assign_binary = cp.Variable((num_districts, num_gridpoints),
+			boolean=True)
 
 		total_population = int(sum(block_populations))
 
@@ -63,6 +202,12 @@ class HardCapacitatedKMeans:
 		constraints = []
 		constraints.append(self.assign <= 1)
 		constraints.append(0 <= self.assign)
+
+		# MIP part (2b)
+		# TODO: Find a more principled way of determining the big M constant
+		# so that any in-practice nonzero assign value is allowed.
+		constraints.append(self.assign_binary >= self.assign)
+		constraints.append(self.assign_binary <= self.assign * 10000) # HACK!
 
 		# LP part (3)
 		# We move the n term to the left-hand side to limit floating point problems.
@@ -82,7 +227,9 @@ class HardCapacitatedKMeans:
 			assign_constraint = cp.sum(self.assign[:,region_pt_idx]) == 1
 			assign_constraints.append(assign_constraint)
 
-		constraints += pop_constraints + assign_constraints
+		constraints += pop_constraints + assign_constraints + \
+			self.get_compactness_constraints(num_districts, num_gridpoints,
+				district_point_dist, self.assign_binary)
 
 		prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
 

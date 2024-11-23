@@ -137,7 +137,7 @@ NS_distance = haversine_np(minimum_point[0], minimum_point[1],
 EW_distance = haversine_np(minimum_point[0], minimum_point[1],
 	minimum_point[0], maximum_point[1])
 
-grid_points = 400
+grid_points = 100
 
 # Get roughly the desired number of grid points at roughly the right
 # aspect ratio by rounding off square roots.
@@ -202,9 +202,10 @@ def redistrict(num_districts, district_indices, verbose=False,
 	district_point_dist = haversine_centers(
 		district_latlon, grid_latlon)
 
-	# 6. Create the linear program.
+	# 6. Create the program/problem to solve.
 	
-	kmeans = UncapacitatedKMeans()
+	kmeans = HardCapacitatedKMeans()
+	kmeans.get_compactness_constraints = HCKM_exact_compactness
 
 	prob = kmeans.create_problem(num_districts, num_gridpoints,
 		block_populations, district_point_dist)
