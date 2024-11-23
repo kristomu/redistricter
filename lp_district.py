@@ -25,6 +25,8 @@ import pathlib
 import itertools
 import subprocess
 
+from problems import *
+
 # https://stackoverflow.com/a/20360045
 # Input coordinates are in radians.
 def LLHtoECEF(r_lat, r_lon, alt):
@@ -94,125 +96,6 @@ def print_claimant_array(claimants):
 			else:
 				printout_string += str(cell)
 		print(printout_string[:-1])
-
-# --- K-means optimization problems -----
-
-# Apparently hard-capacitated K-means may fail to give compact
-# areas, so I'm going to experiment with uncapacitated, possibly
-# with integer programming...
-
-def hard_capacitated_kmeans(num_districts, num_gridpoints,
-	block_populations, sq_district_point_dist):
-
-	# Should the objective function instead be assign * pop * dist^2 ???
-
-	'''
-
-	minimize sum over coordinates x,y in the region:
-	    sum over districts i = 1..n:
-	(1)        assign[i, x, y] * dist^2(centerx_i, centery_i, x, y)
-
-	subject to
-	(2)    for all i, x, y: 0 <= assign[i, x, y] <= 1
-	(3)    for all i: (sum over x, y: assign[i, x, y] * pop[x, y]) <= tpop/n
-	(4)    for all x, y: (sum over i: assign[i, x, y]) = 1
-
-	'''
-
-	assign = cp.Variable((num_districts, num_gridpoints))
-
-	total_population = int(sum(block_populations))
-
-	# Objective function (LP part 1)
-	squared_distances_to_center = 0
-
-	# Unlike uncapacitated, the objective function should not multiply by the
-	# block population.
-	for district_idx in range(num_districts):
-		squared_distances_to_center += sq_district_point_dist[district_idx] @ assign[district_idx]
-
-	# LP part (2)
-	constraints = []
-	constraints.append(assign <= 1)
-	constraints.append(0 <= assign)
-
-	# LP part (3)
-	# We move the n term to the left-hand side to limit floating point problems.
-
-	pop_constraints = []
-
-	for district_idx in range(num_districts):
-		pop_constraint = int(num_districts) * (assign[district_idx] @ block_populations) <= int(total_population)
-		pop_constraints.append(pop_constraint)
-
-	# LP part (4)
-
-	# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
-	assign_constraints = []
-
-	for region_pt_idx in range(num_gridpoints):
-		assign_constraint = cp.sum(assign[:,region_pt_idx]) == 1
-		assign_constraints.append(assign_constraint)
-
-	constraints += pop_constraints + assign_constraints
-
-	prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
-
-	return assign, prob, 1
-
-# TODO: MIP version
-
-def uncapacitated_kmeans(num_districts, num_gridpoints,
-	block_populations, sq_district_point_dist):
-
-	'''
-	minimize sum over coordinates x,y in the region:
-	    sum over districts i = 1..n:
-	(1)        assign[i, x, y] * pop[x, y] * dist^2(centerx_i, centery_i, x, y)
-
-	subject to
-	(2)    for all i, x, y: 0 <= assign[i, x, y] <= 1
-	(3)    for all x, y: (sum over i: assign[i, x, y]) = 1
-	'''
-
-	assign = cp.Variable((num_districts, num_gridpoints))
-
-	# Add a small value so that the objective function never multiplies squared distance
-	# by a population of zero.
-	adj_block_populations = block_populations * 2**8 + 1
-
-	adj_total_pop = int(sum(adj_block_populations))
-
-	# Objective function (LP part 1)
-	squared_distances_to_center = 0
-
-	for district_idx in range(num_districts):
-		squared_distances_to_center += (adj_block_populations *
-			sq_district_point_dist[district_idx]) @ assign[district_idx]
-
-	# do some normalization just so I don't have to deal with extremely large numbers.
-	norm_divisor = adj_total_pop * np.mean(sq_district_point_dist)
-
-	# LP part (2)
-	constraints = []
-	constraints.append(assign <= 1)
-	constraints.append(0 <= assign)
-
-	# LP part (4)
-
-	# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
-	assign_constraints = []
-
-	for region_pt_idx in range(num_gridpoints):
-		assign_constraint = cp.sum(assign[:,region_pt_idx]) == 1
-		assign_constraints.append(assign_constraint)
-
-	constraints += assign_constraints
-
-	prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
-
-	return assign, prob, norm_divisor
-
 
 # 1. Get coordinates and populations
 #	  Use Colorado for now.
@@ -316,13 +199,15 @@ def redistrict(num_districts, district_indices, verbose=False,
 	# 5. Create pairwise distances between centers and points.
 	# We need squared distances because the objective is to minimize the sum of
 	# squared distances - we want a k-means generalization, not a k-medians.
-	sq_district_point_dist = haversine_centers(
-		district_latlon, grid_latlon)**2
+	district_point_dist = haversine_centers(
+		district_latlon, grid_latlon)
 
 	# 6. Create the linear program.
 	
-	assign, prob, norm_divisor = uncapacitated_kmeans(num_districts,
-		num_gridpoints, block_populations, sq_district_point_dist)
+	kmeans = UncapacitatedKMeans()
+
+	prob = kmeans.create_problem(num_districts, num_gridpoints,
+		block_populations, district_point_dist)
 
 	# ==============================================================================
 	# ==============================================================================
@@ -335,21 +220,13 @@ def redistrict(num_districts, district_indices, verbose=False,
 	# values after solving, which is pretty hard to do through a GLPK invocation.
 	# I may replace this with a better solver later.
 
-	# Use the interior point solver unless we need exact values.
-	# If we're going to print out what district is assigned what grid points,
-	# we're going to need exact values. (TODO: Fix this later by updating the
-	# tolerance...)
-
-	#Uncapacitated gives an unbounded outcome if I use Clarabel, figure out why
-	#later...
-	#solver_type = cp.CLARABEL
 	solver_type = cp.SCIP
 
 	prob.solve(verbose=verbose, ignore_dpp=True,
 		canon_backend=cp.SCIPY_CANON_BACKEND, solver=solver_type)
-	objective_value = prob.value / norm_divisor
+	objective_value = prob.value / kmeans.objective_scaling_divisor
 
-	assign_values = np.array([[var.value for var in row] for row in assign])
+	assign_values = np.array([[var.value for var in row] for row in kmeans.assign])
 	district_populations = np.sum(assign_values * block_populations, axis=1)
 	population_stddev = np.sqrt(np.var(district_populations))
 	relative_stddev = population_stddev/np.sum(district_populations)
