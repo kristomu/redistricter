@@ -151,8 +151,10 @@ lat_axis_points = int(np.round(np.sqrt(grid_points) * NS_distance/EW_distance))
 lats = np.linspace(minimum_point[0], maximum_point[0], lat_axis_points)
 lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
 
-def redistrict(num_districts, district_indices, verbose=False,
+def redistrict(desired_num_districts, district_indices, verbose=False,
 	print_claimants=False):
+
+	num_district_candidates = len(district_indices)
 
 	grid_coords = []
 	grid_latlon = []
@@ -205,9 +207,9 @@ def redistrict(num_districts, district_indices, verbose=False,
 	# 6. Create the program/problem to solve.
 	
 	kmeans = HardCapacitatedKMeans()
-	kmeans.get_compactness_constraints = HCKM_exact_compactness
+	#kmeans.get_compactness_constraints = HCKM_exact_compactness
 
-	prob = kmeans.create_problem(num_districts, num_gridpoints,
+	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
 		block_populations, district_point_dist)
 
 	# ==============================================================================
@@ -227,13 +229,28 @@ def redistrict(num_districts, district_indices, verbose=False,
 		canon_backend=cp.SCIPY_CANON_BACKEND, solver=solver_type)
 	objective_value = prob.value / kmeans.objective_scaling_divisor
 
+	# Get a boolean array showing which districts were chosen.
+	district_choices = np.array([int(kmeans.active[x].value) == 1
+		for x in range(num_district_candidates)])
+
+	# and an array of these chosen districts.
+	chosen_districts = district_indices[district_choices]
+
 	assign_values = np.array([[var.value for var in row] for row in kmeans.assign])
-	district_populations = np.sum(assign_values * block_populations, axis=1)
-	population_stddev = np.sqrt(np.var(district_populations))
-	relative_stddev = population_stddev/np.sum(district_populations)
+	chosen_district_populations = np.sum(assign_values *
+		block_populations, axis=1)[district_choices]
+	
+	population_stddev = np.sqrt(np.var(chosen_district_populations))
+	relative_stddev = population_stddev/np.sum(chosen_district_populations)
 
 	if not print_claimants:
-		return objective_value, district_indices, relative_stddev
+		return objective_value, chosen_districts, relative_stddev
+
+	# NOTE: The current display function will produce weird results if not all
+	# districts were chosen, since it will index based on input district number,
+	# not chosen district number. This may lead to large integers being output
+	# in the makeshift map, which, strictly speaking, is correct but doesn't do
+	# user readability much good.
 
 	# Get the values: each row is a district, each cell values[d][p] corresponds to
 	# how much of grid area p's population has been allocated to that district.
@@ -241,11 +258,6 @@ def redistrict(num_districts, district_indices, verbose=False,
 	# We want to figure out which cells have been assigned to which districts, as well
 	# as which cells are uncertain. The cells we can't be sure about are those that
 	# have fractional values, as well as all of their direct neighbors.
-
-
-	# Interior point solvers only solve to a particular accuracy.
-	# TODO: Get this tolerance from the solution itself.
-	solver_eps = 1e-10
 
 	directly_certain = np.max(assign_values, axis=0) > (1-solver_eps)
 
@@ -258,7 +270,7 @@ def redistrict(num_districts, district_indices, verbose=False,
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
 	print_claimant_array(two_dim_claimants)
 
-	return objective_value, district_indices, relative_stddev
+	return objective_value, chosen_districts, relative_stddev
 
 # Things that need to be done if we want to refine things:
 # - For each point, find the points whose Voronoi cells touch the point's.
@@ -268,30 +280,9 @@ def redistrict(num_districts, district_indices, verbose=False,
 #		both to unknown
 # - Otherwise, assign that point to the district (the assignment is definite).
 
-# Then rerun on some grid over the unknown points.
-# But I'll do that *after* I've got rendering working, because my quick and dirty
-# tests seem to suggest something pretty bizarre is going on. Printing claimant
-# arrays gives a district containing either both of Denver and Fort Collins or
-# both of Denver and Colorado Springs; and either configuration would drastically
-# exceed the population limit.
-
-# It's possible that the linear program doesn't even guarantee contiguity:
-# consider a high density city near the middle of a district, with all other
-# district centers far away. Could it be that claiming only part of the city and
-# then a bunch of surrounding land would decrease the penalty for the other
-# districts so much that it's worth it? I'll have to investigate.
-
-# https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282 gives
-# an O((dn)^2) approach to ensuring compactness:
-# for each district pair d_1, d_2:
-#   for each point j in d_1, s in d_2:
-#       dist(j, center of d_1) + dist(s, center of d_2) <=
-#           dist(j, center of d_2) + dist(s, center of d_1)
-# i.e. we must not be able to swap two points belonging to different districts
-# with the distance improving. (This is passed by uncapacitated facility
-# location/k-means). Unfortunately this is completely impractical: e.g.
-# 400 grid points, 8 districts = 10 million constraints. In addition, it
-# doesn't seem to be implementable, even in theory, without using MIP.
+# The sticking point so far is how to robustly find every neighbor of a given
+# point, even when these points may be irregularly placed, as might happen when
+# refining the map.
 
 def run(district_indices=None):
 
@@ -301,16 +292,17 @@ def run(district_indices=None):
 		specified_district = True
 
 	while True:
-		num_districts = 8
+		desired_num_districts = 8
+		num_districts_to_test = 54
 
 		if not specified_district:
-			district_indices = np.random.randint(0, len(block_data),
-				size=num_districts)
+			district_indices = np.random.choice(range(len(block_data)),
+				size=num_districts_to_test, replace=False)
 
 		district_indices = np.array(sorted(district_indices))
 		objective_value, district_indices, relative_stddev = redistrict(
-			num_districts, district_indices,
-			print_claimants=specified_district)
+			desired_num_districts, district_indices,
+			print_claimants=specified_district, verbose=True)
 
 		print(f"{objective_value:.4f}, rel err: "
 			f"{relative_stddev:.4f}, {district_indices}")

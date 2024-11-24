@@ -11,13 +11,18 @@ Currently implemented is:
 	- Hard capacitated k-means (with or without compactness constraints)
 
 They all take the following inputs:
-	- The number of districts,
+	- The desired number of districts,
 	- The number of points to assign to districts ("gridpoints")
 	- Populations of each point
 	- The distance between each district center and point.
 
 and may take additional configuration options. They return the problem while setting
 other relevant parameters (like the assignment variables) of their object.
+
+The desired number of districts may differ from the actual number of districts
+provided. In that case, the problem should specify that only a desired number
+is to be chosen out of the ones provided, and the solver has to figurer out
+what selection is best.
 
 '''
 
@@ -153,36 +158,47 @@ class HardCapacitatedKMeans:
 	def name(self):
 		return self._name
 
-	def create_problem(self, num_districts, num_gridpoints,
+	def create_problem(self, desired_num_districts, num_gridpoints,
 		block_populations, district_point_dist):
 
 		'''
+		The free variables used are:
+			assign[i, p]	How much of point p to assign to district i
+			active[i]		Whether district i is used at all: binary
+		The input data is:
+			dist(centerx_i, centery_i, p)
+							Distance from district i center to point p
+			tpop			The total population
+			n				The desired number of districts
+			M				A large constant.
 
 		minimize sum over points p in the region of interest:
 		    sum over districts i = 1..n:
 		(1)        assign[i, p] * dist^2(centerx_i, centery_i, p)
 
 		subject to
-		(2)    for all i, p: 0 <= assign[i, p] <= 1
+		(2)    for all i, p: 0 <= assign[i, p] <= active[i]
 		(2b)	(if using binary variables)
 				assign_binary[i, p] >= assign[i, p]
 				assign_binary[i, p] <= M * assign[i, p]
-		(3)    for all i: (sum over x, y: assign[i, x, y] * pop[x, y]) <= tpop/n
-		(4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+		(3)    for all i: (sum over p: assign[i, p] * pop[p]) <= tpop/n
+		(4)    for all p: (sum over i: assign[i, p]) = 1
+		(5)	   sum over i: active[i] = n
 
 		If we are also using compactness constraints, we need binary variables
 		that are 0 when the corresponding assign variable is zero, 1 when positive.
 		We'll define them anyway; if we're not using compactness constraints,
 		the solver should just discard the binary variables.
 
-		TODO? A "using compactness constraint" parameter so we don't have
-		to do that?
-
 		'''
 
 		sq_district_point_dist = district_point_dist ** 2
 
+		# Get the number of candidate districts to choose from
+		num_districts = len(sq_district_point_dist)
+
 		self.assign = cp.Variable((num_districts, num_gridpoints))
+		self.active = cp.Variable(num_districts, boolean=True)
 
 		# For compactness constraints.
 		self.assign_binary = cp.Variable((num_districts, num_gridpoints),
@@ -190,7 +206,7 @@ class HardCapacitatedKMeans:
 
 		total_population = int(sum(block_populations))
 
-		# Objective function (LP part 1)
+		# (1): Define the objective function
 		squared_distances_to_center = 0
 
 		# Unlike uncapacitated, the objective function should not
@@ -198,27 +214,32 @@ class HardCapacitatedKMeans:
 		for district_idx in range(num_districts):
 			squared_distances_to_center += sq_district_point_dist[district_idx] @ self.assign[district_idx]
 
-		# LP part (2)
+		# (2) Define the assignment values as fractions, and force to zero if
+		#	  the district is inactive.
+
 		constraints = []
-		constraints.append(self.assign <= 1)
+		for i in range(num_districts):
+			constraints.append(self.assign[i] <= self.active[i])
 		constraints.append(0 <= self.assign)
 
-		# MIP part (2b)
+		# (2b) Set binary assignment variables for use with compactness
+		#      constraints.
+
 		# TODO: Find a more principled way of determining the big M constant
 		# so that any in-practice nonzero assign value is allowed.
 		constraints.append(self.assign_binary >= self.assign)
 		constraints.append(self.assign_binary <= self.assign * 10000) # HACK!
 
-		# LP part (3)
+		# (3) Enforce the capacity limit on districts.
 		# We move the n term to the left-hand side to limit floating point problems.
 
 		pop_constraints = []
 
 		for district_idx in range(num_districts):
-			pop_constraint = int(num_districts) * (self.assign[district_idx] @ block_populations) <= int(total_population)
+			pop_constraint = int(desired_num_districts) * (self.assign[district_idx] @ block_populations) <= int(total_population)
 			pop_constraints.append(pop_constraint)
 
-		# LP part (4)
+		# (4) Set that every point must be assigned to *someone*.
 
 		# (4)    for all gridpoints p: (sum over i: assign[i, p]) = 1
 		assign_constraints = []
@@ -230,6 +251,10 @@ class HardCapacitatedKMeans:
 		constraints += pop_constraints + assign_constraints + \
 			self.get_compactness_constraints(num_districts, num_gridpoints,
 				district_point_dist, self.assign_binary)
+
+		# (5): Enforce that the desired number of districts is chosen.
+
+		constraints.append(cp.sum(self.active) == desired_num_districts)
 
 		prob = cp.Problem(cp.Minimize(squared_distances_to_center), constraints)
 
@@ -245,22 +270,38 @@ class UncapacitatedKMeans:
 	def name(self):
 		return self._name
 
-	def create_problem(self, num_districts, num_gridpoints,
+	def create_problem(self, desired_num_districts, num_gridpoints,
 		block_populations, district_point_dist):
 
 		'''
+
+		The free variables used are:
+			assign[i, p]	How much of point p to assign to district i
+			active[i]		Whether district i is used at all: binary
+		The input data is:
+			dist(centerx_i, centery_i, p)
+							Distance from district i center to point p
+			pop(p)			The number of people closest to point p of the
+							given points
+			n				The desired number of districts
+
 		minimize sum over points p in the region of interest:
 		    sum over districts i = 1..n:
-		(1)        assign[i, x, y] * pop[x, y] * dist^2(centerx_i, centery_i, x, y)
+		(1)        assign[i, p] * pop(p) * dist^2(centerx_i, centery_i, p)
 
 		subject to
-		(2)    for all i, x, y: 0 <= assign[i, x, y] <= 1
-		(3)    for all x, y: (sum over i: assign[i, x, y]) = 1
+		(2)    for all i, p: 0 <= assign[i, p] <= active[i]
+		(3)    for all p: (sum over i: assign[i, p]) = 1
+		(4)	   sum over i: active[i] = n
 		'''
 
 		sq_district_point_dist = district_point_dist ** 2
 
+		# Get the number of candidate districts to choose from
+		num_districts = len(sq_district_point_dist)
+
 		self.assign = cp.Variable((num_districts, num_gridpoints))
+		self.active = cp.Variable(num_districts, boolean=True)
 
 		# Add a small value so that the objective function never multiplies squared distance
 		# by a population of zero.
@@ -268,7 +309,7 @@ class UncapacitatedKMeans:
 
 		adj_total_pop = int(sum(adj_block_populations))
 
-		# Objective function (LP part 1)
+		# (1): Define the objective function
 		squared_distances_to_center = 0
 
 		for district_idx in range(num_districts):
@@ -278,19 +319,26 @@ class UncapacitatedKMeans:
 		# do some normalization just so I don't have to deal with extremely large numbers.
 		self.objective_scaling_divisor = adj_total_pop * np.mean(sq_district_point_dist)
 
-		# LP part (2)
+		# (2) Define the assignment values as fractions, and force to zero if
+		#	  the district is inactive.
+
 		constraints = []
-		constraints.append(self.assign <= 1)
+		for i in range(num_districts):
+			constraints.append(self.assign[i] <= self.active[i])
 		constraints.append(0 <= self.assign)
 
-		# LP part (4)
+		# (3) Set that every point must be assigned to *someone*.
 
-		# (4)    for all x, y: (sum over i: assign[i, x, y]) = 1
+		# (3)    for all x, y: (sum over i: assign[i, x, y]) = 1
 		assign_constraints = []
 
 		for region_pt_idx in range(num_gridpoints):
 			assign_constraint = cp.sum(self.assign[:,region_pt_idx]) == 1
 			assign_constraints.append(assign_constraint)
+
+		# (4): Enforce that the desired number of districts is chosen.
+
+		constraints.append(cp.sum(self.active) == desired_num_districts)
 
 		constraints += assign_constraints
 
