@@ -190,6 +190,11 @@ class HardCapacitatedKMeans:
 		We'll define them anyway; if we're not using compactness constraints,
 		the solver should just discard the binary variables.
 
+		If the number of desired districts is equal to the number of actual
+		districts, then we don't need active variables. While the presolver
+		should remove them anyway, this can apparently take a lot of time,
+		so we just omit them directly in that case instead.
+
 		'''
 
 		sq_district_point_dist = district_point_dist ** 2
@@ -198,7 +203,11 @@ class HardCapacitatedKMeans:
 		num_districts = len(sq_district_point_dist)
 
 		self.assign = cp.Variable((num_districts, num_gridpoints))
-		self.active = cp.Variable(num_districts, boolean=True)
+
+		if desired_num_districts == num_districts:
+			self.active = [cp.Constant(1) for _ in range(num_districts)]
+		else:
+			self.active = cp.Variable(num_districts, boolean=True)
 
 		# For compactness constraints.
 		self.assign_binary = cp.Variable((num_districts, num_gridpoints),
@@ -218,9 +227,9 @@ class HardCapacitatedKMeans:
 		#	  the district is inactive.
 
 		constraints = []
+		constraints.append(0 <= self.assign)
 		for i in range(num_districts):
 			constraints.append(self.assign[i] <= self.active[i])
-		constraints.append(0 <= self.assign)
 
 		# (2b) Set binary assignment variables for use with compactness
 		#      constraints.

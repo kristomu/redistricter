@@ -259,7 +259,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# as which cells are uncertain. The cells we can't be sure about are those that
 	# have fractional values, as well as all of their direct neighbors.
 
-	directly_certain = np.max(assign_values, axis=0) > (1-solver_eps)
+	directly_certain = np.max(assign_values, axis=0) > (1 - 1e-5)
 
 	# Which district belongs to which point. Regions with multiple districts
 	# are set to -1.
