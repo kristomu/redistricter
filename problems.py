@@ -152,7 +152,8 @@ class HardCapacitatedKMeans:
 		self._name = "Hard capacitated k-means"
 		self.assign = None
 		self.objective_scaling_divisor = 1
-		self.get_compactness_constraints = lambda a, b, c, d: []
+		self.has_compactness_constraints = False
+		self.get_compactness_constraints = None
 
 	@property
 	def name(self):
@@ -187,8 +188,10 @@ class HardCapacitatedKMeans:
 
 		If we are also using compactness constraints, we need binary variables
 		that are 0 when the corresponding assign variable is zero, 1 when positive.
-		We'll define them anyway; if we're not using compactness constraints,
-		the solver should just discard the binary variables.
+		Apparently the solver isn't clever enough to discard binary variables
+		that don't relate to anything, so if we're not using compactness
+		constraints, we create a dummy constraint that takes no time to solve.
+		(Removing the binary variables outright crashes cvxpy for some reason)
 
 		If the number of desired districts is equal to the number of actual
 		districts, then we don't need active variables. While the presolver
@@ -236,8 +239,14 @@ class HardCapacitatedKMeans:
 
 		# TODO: Find a more principled way of determining the big M constant
 		# so that any in-practice nonzero assign value is allowed.
-		constraints.append(self.assign_binary >= self.assign)
-		constraints.append(self.assign_binary <= self.assign * 10000) # HACK!
+		if self.has_compactness_constraints:
+			constraints.append(self.assign_binary >= self.assign)
+			constraints.append(self.assign_binary <= self.assign * 10000) # HACK!
+		else:
+			# BUG: For some bizarre reason, not having any assign_binary
+			# constraints makes cvxpy crash. The same happens if we remove
+			# assign_binary altogether. Something to report?
+			constraints.append(self.assign_binary == 1)
 
 		# (3) Enforce the capacity limit on districts.
 		# We move the n term to the left-hand side to limit floating point problems.
@@ -257,9 +266,11 @@ class HardCapacitatedKMeans:
 			assign_constraint = cp.sum(self.assign[:,region_pt_idx]) == 1
 			assign_constraints.append(assign_constraint)
 
-		constraints += pop_constraints + assign_constraints + \
-			self.get_compactness_constraints(num_districts, num_gridpoints,
-				district_point_dist, self.assign_binary)
+		constraints += pop_constraints + assign_constraints
+
+		if self.has_compactness_constraints:
+			constraints += self.get_compactness_constraints(num_districts,
+				num_gridpoints, district_point_dist, self.assign_binary)
 
 		# (5): Enforce that the desired number of districts is chosen.
 
