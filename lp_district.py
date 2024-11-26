@@ -91,11 +91,8 @@ def haversine_centers(centers_latlon, other_points):
 
 
 def print_claimant_array(claimants):
-	# Because higher latitudes come later but correspond to
-	# a more northernly posiiton, the array will be "upside down".
-	# So print the rows in reverse order.
-	# (Don't print stuff near or south of the equator with this!)
-	for row in np.flip(claimants, axis=0):
+
+	for row in claimants:
 		printout_string = ""
 		for cell in row:
 			if cell == -1:
@@ -104,15 +101,13 @@ def print_claimant_array(claimants):
 				printout_string += str(cell)
 		print(printout_string[:-1])
 
-def write_image(filename, aspect_ratio, census_block_data):
-	# EXAMPLE CODE: Rendering.
-	# TODO: Also handle the thing being upside down. Do this by orienting the
-	# corner closest to the north pole up.
-	image_res = 300**2 # say
-	height, width, error = grid_dimensions(image_res, EW_distance/NS_distance)
+def write_image(filename, pixels, aspect_ratio, census_block_data):
 
-	img_lats = np.linspace(minimum_point[0], maximum_point[0], int(height))
-	img_lons = np.linspace(minimum_point[1], maximum_point[1], int(width))
+	height, width, error = grid_dimensions(pixels, aspect_ratio)
+
+	# See below for why max and min is swapped for latitudes.
+	img_lats = np.linspace(maximum_point[0], minimum_point[0], height)
+	img_lons = np.linspace(minimum_point[1], maximum_point[1], width)
 
 	# Create a kd tree containing the coordinates of each census block.
 	block_coords = [x["coords"] for x in census_block_data]
@@ -203,11 +198,20 @@ grid_points = 100
 
 # Get roughly the desired number of grid points at roughly the right
 # aspect ratio by rounding off square roots.
+# NOTE: I could change this now that I have quant_tools.grid_dimensions, but
+# I would no longer be able to compare objective values to earlier versions'
+# values since the problem would change. It might be best to do it anyway...
+# later.
 
 long_axis_points = int(np.round(np.sqrt(grid_points) * EW_distance/NS_distance))
 lat_axis_points = int(np.round(np.sqrt(grid_points) * NS_distance/EW_distance))
 
-lats = np.linspace(minimum_point[0], maximum_point[0], lat_axis_points)
+# When we plot figures on screen, (0, 0) is upper left. However, latitudes are
+# greater the closer they are to the North pole. To make maps come out the right
+# way, we thus need to make earlier latitudes higher. That's why the maximum
+# and minimum points are swapped here.
+
+lats = np.linspace(maximum_point[0], minimum_point[0], lat_axis_points)
 lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
 
 def redistrict(desired_num_districts, district_indices, verbose=False,
@@ -329,7 +333,9 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# See the function for why this 2D claimant array is upside down
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
 	print_claimant_array(two_dim_claimants)
-	write_image("output.png", EW_distance/NS_distance, block_data)
+
+	pixels = 300**2 # e.g., total number of pixels used in output image.
+	write_image("output.png", pixels, EW_distance/NS_distance, block_data)
 
 	return objective_value, chosen_districts, relative_stddev
 
@@ -365,8 +371,10 @@ def run(district_indices=None):
 			desired_num_districts, district_indices,
 			print_claimants=specified_district, verbose=True)
 
+		# Printing the district indices as a list makes it easier to
+		# copy and paste into Python code.
 		print(f"{objective_value:.4f}, rel err: "
-			f"{relative_stddev:.4f}, {district_indices}")
+			f"{relative_stddev:.4f}, {list(district_indices)}")
 
 		if specified_district:
 			return
@@ -377,6 +385,7 @@ district_indices = None
 # include:
 
 # Good HCKM scores:
+# district_indices = [5377, 25548, 29624, 45261, 52434, 73520, 90033, 112030]
 # district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
 
 # Good uncapacitated scores or relative std devs:

@@ -68,4 +68,4 @@ def grid_dimensions(target_num_points, target_aspect_ratio):
 			height = candidate_height
 			width = candidate_width
 	
-	return (height, width, record_quality)
+	return (int(height), int(width), record_quality)
