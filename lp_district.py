@@ -21,15 +21,19 @@ import numpy as np
 import cvxpy as cp
 
 import time
+import pickle
 import pathlib
 import itertools
 import subprocess
 
+from PIL import Image
+
 from problems import *
+from quant_tools import grid_dimensions
 
 # https://stackoverflow.com/a/20360045
 # Input coordinates are in radians.
-def LLHtoECEF(r_lat, r_lon, alt):
+def LLHtoECEF_rad(r_lat, r_lon, alt):
 	# see http://www.mathworks.de/help/toolbox/aeroblks/llatoecefposition.html
 
 	rad = np.float64(6378137.0)        # Radius of the Earth (in meters)
@@ -45,6 +49,9 @@ def LLHtoECEF(r_lat, r_lon, alt):
 	z = (rad * S + alt)*sinLat
 
 	return (x, y, z)
+
+def LLHtoECEF_latlon(lat, lon, alt):
+	return LLHtoECEF_rad(np.radians(lat), np.radians(lon), alt)
 
 # https://stackoverflow.com/a/29546836
 def haversine_np(lat1, lon1, lat2, lon2):
@@ -97,6 +104,61 @@ def print_claimant_array(claimants):
 				printout_string += str(cell)
 		print(printout_string[:-1])
 
+def write_image(filename, aspect_ratio, census_block_data):
+	# EXAMPLE CODE: Rendering.
+	# TODO: Also handle the thing being upside down. Do this by orienting the
+	# corner closest to the north pole up.
+	image_res = 300**2 # say
+	height, width, error = grid_dimensions(image_res, EW_distance/NS_distance)
+
+	img_lats = np.linspace(minimum_point[0], maximum_point[0], int(height))
+	img_lons = np.linspace(minimum_point[1], maximum_point[1], int(width))
+
+	# Create a kd tree containing the coordinates of each census block.
+	block_coords = [x["coords"] for x in census_block_data]
+	block_tree = cKDTree(block_coords)
+
+	# XXX: Could use a Delaunay triangulation of the census blocks to check each
+	# image point against the closest census block center's neighbors. Suppose that
+	# a very large block is next to a quite small one, and the point is just inside
+	# the large block. Then the small one's center might be closer even though the
+	# point properly speaking belongs to the large block.
+
+	# (We could also use Delaunay for resolution refinement. later.)
+
+	# XXX: Also do polygon checking to account for points that are outside the
+	# region (state) itself. (Or extract a polygon for the state and use polygon
+	# checking against it.)
+
+	# This can be vectorized for great speedups (see above how to vectorize
+	# LLHtoECEF), but I want to get it working first.
+
+	image_space_claimants = []
+
+	for img_lat in img_lats:
+		image_space_line = []
+		for img_long in img_lons:
+			img_coord = LLHtoECEF_latlon(img_lat, img_long, mean_radius)
+			block_idx = block_tree.query(img_coord)[1]
+			claimant = census_block_data[block_idx]["claimant"]
+			image_space_line.append(claimant)
+		image_space_claimants.append(image_space_line)
+
+	image_space_claimants = np.array(image_space_claimants)
+	claimed_num_districts = np.max(image_space_claimants)+1
+
+	# Create some random colors.
+	colors = np.random.randint(256, size = (claimed_num_districts, 3),
+		dtype=np.uint8)
+
+	# Color mixed claims grey.
+	colors = np.vstack([colors, [127, 127, 127]])
+	image_space_claimants[image_space_claimants==-1] = claimed_num_districts
+
+	# And save!
+	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
+	image.save(filename, "PNG")
+
 # 1. Get coordinates and populations
 #	  Use Colorado for now.
 state_names = get_state_names()
@@ -115,7 +177,7 @@ for block in block_data:
 
 	radian_coords = np.radians(coords)
 
-	block["coords"] = LLHtoECEF(
+	block["coords"] = LLHtoECEF_rad(
 		radian_coords[0], radian_coords[1], mean_radius)
 
 	if minimum_point is None:
@@ -126,7 +188,7 @@ for block in block_data:
 	minimum_point = np.minimum(minimum_point, coords)
 	maximum_point = np.maximum(maximum_point, coords)
 
-# 3. Create a plate carée grid of the desired granularity.
+# 3. Create a equirectangular grid of the desired granularity.
 
 # First determine the aspect ratio. (These are off by about 10 km for
 # Colorado, find out why...) (Oh, apparently it's not actually
@@ -145,9 +207,6 @@ grid_points = 100
 long_axis_points = int(np.round(np.sqrt(grid_points) * EW_distance/NS_distance))
 lat_axis_points = int(np.round(np.sqrt(grid_points) * NS_distance/EW_distance))
 
-# TODO: Make this rectangular so that we know if we get the axes right
-# later.
-
 lats = np.linspace(minimum_point[0], maximum_point[0], lat_axis_points)
 lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
 
@@ -160,8 +219,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	grid_latlon = []
 
 	for lat, lon in itertools.product(lats, lons):
-		grid_coords.append(
-			LLHtoECEF(np.radians(lat), np.radians(lon), mean_radius))
+		grid_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		grid_latlon.append([lat, lon])
 
 	district_coords = []
@@ -170,14 +228,8 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	for index in district_indices:
 		lat = block_data[index]["lat"]
 		lon = block_data[index]["long"]
-		district_coords.append(LLHtoECEF(lat, lon, mean_radius))
+		district_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		district_latlon.append([lat, lon])
-
-	# We need the grid to include the district points so that
-	# people close to the center get assigned to it. (Or do we?) (a)
-
-	#grid_coords += district_coords
-	#grid_latlon += district_latlon
 
 	grid_coords = np.array(grid_coords)
 	grid_latlon = np.array(grid_latlon)
@@ -194,9 +246,10 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 
 	block_populations = np.zeros(num_gridpoints, np.int64)
 
-	for block in block_data:
-		block["center"] = points_tree.query(block["coords"])[1]
-		block_populations[block["center"]] += block["population"]
+	for cur_block in block_data:
+		center_idx = points_tree.query(cur_block["coords"])[1]
+		cur_block["center_idx"] = center_idx
+		block_populations[cur_block["center_idx"]] += cur_block["population"]
 
 	# 5. Create pairwise distances between centers and points.
 	# We need squared distances because the objective is to minimize the sum of
@@ -207,7 +260,8 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# 6. Create the program/problem to solve.
 	
 	kmeans = HardCapacitatedKMeans()
-	#kmeans.get_compactness_constraints = HCKM_exact_compactness
+	# kmeans.has_compactness_constraints = True
+	# kmeans.get_compactness_constraints = HCKM_exact_compactness
 
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
 		block_populations, district_point_dist)
@@ -266,9 +320,16 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	claimants = np.argmax(assign_values, axis=0)
 	claimants[directly_certain == False] = -1
 
+	# Associate each census block with the claimant for the point
+	# it's closest to.
+
+	for cur_block in block_data:
+		cur_block["claimant"] = claimants[cur_block["center_idx"]]
+
 	# See the function for why this 2D claimant array is upside down
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
 	print_claimant_array(two_dim_claimants)
+	write_image("output.png", EW_distance/NS_distance, block_data)
 
 	return objective_value, chosen_districts, relative_stddev
 
