@@ -89,6 +89,80 @@ def haversine_centers(centers_latlon, other_points):
 
 	return np.array(list(each_center_iter))
 
+# Draws an entry from 0...num_entries proportional to weight.
+def draw(num_entries, weight):
+	norm_divisor = np.sum(weight)
+
+	return np.random.choice(range(num_entries), p = weight/norm_divisor)
+
+# K-means++ initial cluster selection. Let's see if these provide a better
+# chance of finding a good assignment of candidate centers than plain
+# Monte Carlo does.
+
+# Distance_generator is a function that accepts an index i and returns the
+# distance relative to that index, i.e. dists[k] is the distance from point k
+# to point i.
+
+def kmpp(population_counts, distance_generator, num_clusters):
+	num_points = len(population_counts)
+	minimal_distances = np.array([np.inf] * num_points)
+
+	# Pick initial point
+	draws = [draw(num_points, population_counts)]
+
+	for i in range(1, num_clusters):
+		# Update the minimal distances array to take the last added
+		# point into account.
+		minimal_distances = np.minimum(minimal_distances,
+			distance_generator(draws[-1]))
+
+		# Each member of the population counts as one point,
+		# and each point is chosen with probability proportional to the
+		# squared distance to the closest already chosen point.
+
+		kmpp_weight = population_counts * minimal_distances ** 2
+
+		# Draw another entry.
+
+		new_entry = draw(num_points, kmpp_weight)
+
+		# Append it to the list of chosen points.
+		draws.append(new_entry)
+
+	return np.array(draws)
+
+def census_block_kmpp(block_data, num_clusters):
+	block_populations = [block["population"] for block in block_data]
+	block_latlongs = np.array(
+		[[block["lat"], block["long"]] for block in block_data])
+
+	def dist_generator(block_idx):
+		block_i_center = np.array(
+			[block_data[block_idx]["lat"], block_data[block_idx]["long"]])
+
+		return haversine_center(block_i_center, block_latlongs)
+
+	return kmpp(block_populations, dist_generator, num_clusters)
+
+# Generate a k-means++ selection for desired_num_districts until
+# there are num_districts_to_test unique values.
+def census_block_repeated_kmpp(block_data,
+	desired_num_districts, num_districts_to_test):
+
+	seen_already = set()
+	total_draws = []
+
+	while True:
+		draws_this_round = census_block_kmpp(block_data,
+			desired_num_districts)
+
+		for point in draws_this_round:
+			if point in seen_already:
+				continue
+
+			total_draws.append(point)
+			if len(total_draws) == num_districts_to_test:
+				return total_draws
 
 def print_claimant_array(claimants):
 
@@ -248,12 +322,12 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	points_tree = cKDTree(grid_coords)
 	num_gridpoints = len(grid_coords)
 
-	block_populations = np.zeros(num_gridpoints, np.int64)
+	grid_populations = np.zeros(num_gridpoints, np.int64)
 
 	for cur_block in block_data:
 		center_idx = points_tree.query(cur_block["coords"])[1]
 		cur_block["center_idx"] = center_idx
-		block_populations[cur_block["center_idx"]] += cur_block["population"]
+		grid_populations[cur_block["center_idx"]] += cur_block["population"]
 
 	# 5. Create pairwise distances between centers and points.
 	# We need squared distances because the objective is to minimize the sum of
@@ -268,7 +342,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# kmeans.get_compactness_constraints = HCKM_exact_compactness
 
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
-		block_populations, district_point_dist)
+		grid_populations, district_point_dist)
 
 	# ==============================================================================
 	# ==============================================================================
@@ -296,7 +370,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 
 	assign_values = np.array([[var.value for var in row] for row in kmeans.assign])
 	chosen_district_populations = np.sum(assign_values *
-		block_populations, axis=1)[district_choices]
+		grid_populations, axis=1)[district_choices]
 	
 	population_stddev = np.sqrt(np.var(chosen_district_populations))
 	relative_stddev = population_stddev/np.sum(chosen_district_populations)
@@ -363,6 +437,8 @@ def run(district_indices=None):
 		num_districts_to_test = 54
 
 		if not specified_district:
+			#district_indices = census_block_repeated_kmpp(
+			#	block_data, desired_num_districts, num_districts_to_test)
 			district_indices = np.random.choice(range(len(block_data)),
 				size=num_districts_to_test, replace=False)
 
@@ -385,6 +461,7 @@ district_indices = None
 # include:
 
 # Good HCKM scores:
+# district_indices = [1942, 4332, 29611, 37589, 39503, 102295, 119431, 136323]
 # district_indices = [5377, 25548, 29624, 45261, 52434, 73520, 90033, 112030]
 # district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
 
