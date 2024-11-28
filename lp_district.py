@@ -16,7 +16,7 @@
 '''
 
 from parse_dbf import get_state_names, get_census_block_data
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree, Delaunay
 import numpy as np
 import cvxpy as cp
 
@@ -281,8 +281,14 @@ def create_grid(grid_points, minimum_point, maximum_point):
 
 	return np.array(grid_latlon), np.array(grid_coords), long_axis_points
 
+# max_seconds is the max number of seconds the solver should spend solving.
+# It's useful for HCKM problems with a very large number of candidate points,
+# see problems.py.
+
+# TODO: Disregard it when we're refining.
+
 def redistrict(desired_num_districts, district_indices, verbose=False,
-	print_claimants=False):
+	print_claimants=False, max_seconds=None):
 
 	num_district_candidates = len(district_indices)
 
@@ -342,9 +348,14 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# I may replace this with a better solver later.
 
 	solver_type = cp.SCIP
+	scip_params = {}
+
+	if max_seconds:
+		scip_params = { "limits/time": max_seconds }
 
 	prob.solve(verbose=verbose, ignore_dpp=True,
-		canon_backend=cp.SCIPY_CANON_BACKEND, solver=solver_type)
+		canon_backend=cp.SCIPY_CANON_BACKEND, solver=solver_type,
+		scip_params=scip_params)
 	objective_value = prob.value / kmeans.objective_scaling_divisor
 
 	# Get a boolean array showing which districts were chosen.
@@ -364,11 +375,32 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	if not print_claimants:
 		return objective_value, chosen_districts, relative_stddev
 
-	# NOTE: The current display function will produce weird results if not all
-	# districts were chosen, since it will index based on input district number,
-	# not chosen district number. This may lead to large integers being output
-	# in the makeshift map, which, strictly speaking, is correct but doesn't do
-	# user readability much good.
+	# If we want to refine the result, we need to invalidate some points - points
+	# whose Voronoi cells might have finer detail that we don't know yet. There
+	# are two types:
+	#	- Points that are assigned to multiple districts (because it indicates
+	#		that the point is densely populated and we need higher resolution
+	#		to discern the details).
+	#	- Points that neighbor points assigned to other districts (because the
+	#		true, higher res border may be in the middle of a current resolution
+	#		cell).
+
+	# To do this, we first need to figure out what the points' neighbors are.
+	# Let's use a Delaunay triangulation.
+
+	# Some further experimentation indicates that there may be numerical
+	# imprecision problems here. Let's see later if they pose a problem.
+
+	grid_neighbor_source = Delaunay(grid_latlon,
+		qhull_options="Qbb Qc Qz Q12 Qt")
+	indptr, indices = grid_neighbor_source.vertex_neighbor_vertices
+
+	grid_neighbors = [indices[indptr[i]:indptr[i+1]]
+		for i in range(num_gridpoints)]
+
+	# Next, we need to determine the grid points that are "stale", or
+	# invalidated. First we need a mapping from grid points to districts
+	# that hold them.
 
 	# Get the values: each row is a district, each cell values[d][p] corresponds to
 	# how much of grid area p's population has been allocated to that district.
@@ -384,11 +416,67 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	claimants = np.argmax(assign_values, axis=0)
 	claimants[directly_certain == False] = -1
 
+	# Determine stale points.
+
+	stale_gridpoints = set()
+	for i in range(num_gridpoints):
+		# Points assigned to multiple districts.
+		if claimants[i] == -1:
+			stale_gridpoints.add(i)
+			continue
+		# Maybe some clever vectorization could be done here.
+		for neighbor in grid_neighbors[i]:
+			if claimants[neighbor] != claimants[i]:
+				stale_gridpoints.add(i)
+
+	# Next, create a higher res grid and determine which points are
+	# closest/on top of a stale grid point.
+	# TODO: Find a better way to do this. E.g. suppose a stale point
+	# is something like a city smack dab in the middle of a large
+	# set region, then the chance that our new grid gets on top of it
+	# is very small. Ultimately, I need to get away from grids entirely.
+
+	new_total_gridpoints = 150
+
+	new_grid_latlon, new_grid_coords, new_long_axis_points = create_grid(
+		new_total_gridpoints, minimum_point, maximum_point)
+
+	# Find grid points that cover stale points.
+	old_grid_points_covered = points_tree.query(new_grid_coords)[1]
+	covers_stale = [i for i in range(new_total_gridpoints) \
+		if old_grid_points_covered[i] in stale_gridpoints]
+	does_new_point_cover_stale = np.array([False] * new_total_gridpoints)
+	does_new_point_cover_stale[covers_stale] = True
+
+	# Next: make redistrict take does_new_point_cover_stale as input.
+	# Count the population for each district covering stale points and
+	# decided points. The former go into the solver as pop[point] as
+	# before; the latter is summed up to decided_pop[district] based
+	# on district the decided point is closest to.
+	# Then the HCKM solver population constraint should instead be
+	# (3) decided[district] +
+	#		for all i: (sum over p: assign[i, p] * pop[p]) <= tpop/n
+
+	# --All of that is TODO--
+
+
+
+
+	# Stuff related to outputting an image may be found below.
+
 	# Associate each census block with the claimant for the point
 	# it's closest to.
 
 	for cur_block in block_data:
 		cur_block["claimant"] = claimants[cur_block["center_idx"]]
+		# Better is: get the polygon for the census block and check
+		# that every vertex is in a decided block. If it is, then the
+		# census block is decided, otherwise it is at least partly
+		# stale. TODO?
+		if cur_block["center_idx"] in stale_gridpoints:
+			cur_block["certain_claimant"] = -1
+		else:
+			cur_block["certain_claimant"] = cur_block["claimant"]
 
 	# See the function for why this 2D claimant array is upside down
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
@@ -421,19 +509,30 @@ def run(district_indices=None):
 		specified_district = True
 
 	while True:
-		desired_num_districts = 8
+		# NOTE: Colorado can support up to 1000 here for
+		# ordinary (non-compact) HCKM...
 		num_districts_to_test = 54
+		desired_num_districts = 8
 
-		if not specified_district:
+		# If we haven't specified a district and are instead just
+		# brute-forcing stuff, use a timeout (see notes in problems.py)
+		# You may need to adjust it according to your computer's
+		# performance. (TODO, fix later??? Something like: it we've
+		# spent more than half the time without an improvement in the
+		# primal, give up? Does SCIP even support that?)
+
+		if specified_district:
+			max_seconds = None
+		else:
 			district_indices = census_block_kmpp(
 				block_data, num_districts_to_test)
-			#district_indices = np.random.choice(range(len(block_data)),
-			#	size=num_districts_to_test, replace=False)
+			max_seconds = 300
 
 		district_indices = np.array(sorted(district_indices))
 		objective_value, district_indices, relative_stddev = redistrict(
 			desired_num_districts, district_indices,
-			print_claimants=specified_district, verbose=True)
+			print_claimants=specified_district, verbose=True,
+			max_seconds=max_seconds)
 
 		# Printing the district indices as a list makes it easier to
 		# copy and paste into Python code.
