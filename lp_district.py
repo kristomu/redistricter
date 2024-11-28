@@ -144,26 +144,6 @@ def census_block_kmpp(block_data, num_clusters):
 
 	return kmpp(block_populations, dist_generator, num_clusters)
 
-# Generate a k-means++ selection for desired_num_districts until
-# there are num_districts_to_test unique values.
-def census_block_repeated_kmpp(block_data,
-	desired_num_districts, num_districts_to_test):
-
-	seen_already = set()
-	total_draws = []
-
-	while True:
-		draws_this_round = census_block_kmpp(block_data,
-			desired_num_districts)
-
-		for point in draws_this_round:
-			if point in seen_already:
-				continue
-
-			total_draws.append(point)
-			if len(total_draws) == num_districts_to_test:
-				return total_draws
-
 def print_claimant_array(claimants):
 
 	for row in claimants:
@@ -173,7 +153,7 @@ def print_claimant_array(claimants):
 				printout_string += "."
 			else:
 				printout_string += str(cell)
-		print(printout_string[:-1])
+		print(printout_string)
 
 def write_image(filename, pixels, aspect_ratio, census_block_data):
 
@@ -257,41 +237,40 @@ for block in block_data:
 	minimum_point = np.minimum(minimum_point, coords)
 	maximum_point = np.maximum(maximum_point, coords)
 
-# 3. Create a equirectangular grid of the desired granularity.
-
-# First determine the aspect ratio. (These are off by about 10 km for
-# Colorado, find out why...) (Oh, apparently it's not actually
-# rectangular.)
-
-NS_distance = haversine_np(minimum_point[0], minimum_point[1],
-	maximum_point[0], minimum_point[1])
-EW_distance = haversine_np(minimum_point[0], minimum_point[1],
-	minimum_point[0], maximum_point[1])
-
 grid_points = 100
 
-# Get roughly the desired number of grid points at roughly the right
-# aspect ratio by rounding off square roots.
-# NOTE: I could change this now that I have quant_tools.grid_dimensions, but
-# I would no longer be able to compare objective values to earlier versions'
-# values since the problem would change. It might be best to do it anyway...
-# later.
+# Creates a equirectangular grid of the desired granularity.
+# minimum_point is the minimum latitude and longitude of the bounding box
+# surrounding the state. maximum_point ditto with the maximum.
 
-long_axis_points = int(np.round(np.sqrt(grid_points) * EW_distance/NS_distance))
-lat_axis_points = int(np.round(np.sqrt(grid_points) * NS_distance/EW_distance))
+def get_aspect_ratio(minimum_point, maximum_point):
+	NS_distance = haversine_np(minimum_point[0], minimum_point[1],
+		maximum_point[0], minimum_point[1])
+	EW_distance = haversine_np(minimum_point[0], minimum_point[1],
+		minimum_point[0], maximum_point[1])
 
-# When we plot figures on screen, (0, 0) is upper left. However, latitudes are
-# greater the closer they are to the North pole. To make maps come out the right
-# way, we thus need to make earlier latitudes higher. That's why the maximum
-# and minimum points are swapped here.
+	return EW_distance/NS_distance
 
-lats = np.linspace(maximum_point[0], minimum_point[0], lat_axis_points)
-lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
+def create_grid(grid_points, minimum_point, maximum_point):
+	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
 
-def redistrict(desired_num_districts, district_indices, verbose=False,
-	print_claimants=False):
+	# Get roughly the desired number of grid points at roughly the right
+	# aspect ratio by rounding off square roots.
+	# NOTE: I could change this now that I have quant_tools.grid_dimensions, but
+	# I would no longer be able to compare objective values to earlier versions'
+	# values since the problem would change. It might be best to do it anyway...
+	# later.
 
-	num_district_candidates = len(district_indices)
+	long_axis_points = int(np.round(np.sqrt(grid_points) * aspect_ratio))
+	lat_axis_points = int(np.round(np.sqrt(grid_points) / aspect_ratio))
+
+	# When we plot figures on screen, (0, 0) is upper left. However, latitudes are
+	# greater the closer they are to the North pole. To make maps come out the right
+	# way, we thus need to make earlier latitudes higher. That's why the maximum
+	# and minimum points are swapped here.
+
+	lats = np.linspace(maximum_point[0], minimum_point[0], lat_axis_points)
+	lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
 
 	grid_coords = []
 	grid_latlon = []
@@ -299,6 +278,16 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	for lat, lon in itertools.product(lats, lons):
 		grid_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		grid_latlon.append([lat, lon])
+
+	return np.array(grid_latlon), np.array(grid_coords), long_axis_points
+
+def redistrict(desired_num_districts, district_indices, verbose=False,
+	print_claimants=False):
+
+	num_district_candidates = len(district_indices)
+
+	grid_latlon, grid_coords, long_axis_points = create_grid(
+		grid_points, minimum_point, maximum_point)
 
 	district_coords = []
 	district_latlon = []
@@ -308,9 +297,6 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 		lon = block_data[index]["long"]
 		district_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		district_latlon.append([lat, lon])
-
-	grid_coords = np.array(grid_coords)
-	grid_latlon = np.array(grid_latlon)
 
 	district_coords = np.array(district_coords)
 	district_latlon = np.array(district_latlon)
@@ -409,7 +395,9 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	print_claimant_array(two_dim_claimants)
 
 	pixels = 300**2 # e.g., total number of pixels used in output image.
-	write_image("output.png", pixels, EW_distance/NS_distance, block_data)
+
+	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
+	write_image("output.png", pixels, aspect_ratio, block_data)
 
 	return objective_value, chosen_districts, relative_stddev
 
@@ -437,10 +425,10 @@ def run(district_indices=None):
 		num_districts_to_test = 54
 
 		if not specified_district:
-			#district_indices = census_block_repeated_kmpp(
-			#	block_data, desired_num_districts, num_districts_to_test)
-			district_indices = np.random.choice(range(len(block_data)),
-				size=num_districts_to_test, replace=False)
+			district_indices = census_block_kmpp(
+				block_data, num_districts_to_test)
+			#district_indices = np.random.choice(range(len(block_data)),
+			#	size=num_districts_to_test, replace=False)
 
 		district_indices = np.array(sorted(district_indices))
 		objective_value, district_indices, relative_stddev = redistrict(

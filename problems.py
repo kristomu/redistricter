@@ -39,6 +39,14 @@ what selection is best.
 # as num districts^2 * num points^2 - it's going to be real fun when
 # we get to California...
 
+# TODO: Put these in classes, too, and let the k-means constructors
+# accept them. Add support for relaxed compactness that doesn't use
+# binaries. (so the compactness constraint class should have
+# self.requires_assign_binaries or something like.)
+# Then try compactness, 100 points, 8-of-16 district centers, and check
+# what the solving speed is like. The continuous assign version would
+# work as upper bounds, branch and bound style.
+
 def HCKM_relaxed_compactness(num_districts, num_gridpoints,
 		district_point_dist, assign_binary, show_progress=True):
 
@@ -146,6 +154,17 @@ def HCKM_exact_compactness(num_districts, num_gridpoints,
 		pbar.close()
 
 	return compactness_constraints
+
+# NOTE about HCKM: Using a very large number of candidate districts and
+# a small number of desired districts leads SCIP to almost immediately
+# find the proper primal bound. It then spends an extremely long time
+# narrowing the dual bound to the primal bound. Perhaps some additional
+# technically redundant constraints could be implemented here to speed
+# up the process?
+
+# Perhaps we could take some inspiration from Ágoston and Nagy,
+# "Mixed integer linear programming formulation for K-means clustering
+# problem".
 
 class HardCapacitatedKMeans:
 	def __init__(self):
