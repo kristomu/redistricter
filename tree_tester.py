@@ -35,3 +35,16 @@ def get_value(point):
 	return 1			# second color
 
 root = RQuadtree()
+
+# Get all the undecided points. (When we start doing solving stuff, we'll
+# also have to get adjacent *decided* points to assign the known population
+# assigned to a district to. But that's for later.)
+
+root.split_on_bounds(bounding_square_ul, bounding_square_lr,
+	nat_upper_left, nat_lower_right)
+undecideds = root.get_undecided_points()
+
+# Resolve them and update the cells' statuses.
+assignments = {point: get_value(point) for point in undecideds}
+
+root.split_on_points(assignments)
