@@ -23,10 +23,10 @@ def get_value(point):
 	x, y = point
 
 	if x < 0 or x > 1:
-		raise KeyError("get_value: x is out of bounds")
+		raise IndexError("get_value: x is out of bounds")
 
 	if y < 0 or y > 0.5:
-		raise KeyError("get_value: y is out of bounds")
+		raise IndexError("get_value: y is out of bounds")
 
 	# The diagonal is defined by y = x/2.
 	if x >= y * 2:
@@ -36,15 +36,30 @@ def get_value(point):
 
 root = RQuadtree()
 
-# Get all the undecided points. (When we start doing solving stuff, we'll
-# also have to get adjacent *decided* points to assign the known population
-# assigned to a district to. But that's for later.)
+def step(root):
+	# Get all the undecided points. (When we start doing solving stuff, we'll
+	# also have to get adjacent *decided* points to assign the known population
+	# assigned to a district to. But that's for later.)
 
-root.split_on_bounds(bounding_square_ul, bounding_square_lr,
-	nat_upper_left, nat_lower_right)
-undecideds = root.get_undecided_points()
+	root.split_on_bounds(bounding_square_ul, bounding_square_lr,
+		nat_upper_left, nat_lower_right)
+	undecideds = root.get_undecided_points()
 
-# Resolve them and update the cells' statuses.
-assignments = {point: get_value(point) for point in undecideds}
+	# Resolve them and update the cells' statuses.
+	assignments = {point: get_value(point) for point in undecideds}
 
-root.split_on_points(assignments)
+	root.split_on_points(assignments)
+
+	print(root.get_decided_points())
+
+# Repeat this function as many times as you'd like.
+
+# TODO: Optimization. Particularly when dealing with split_on_bounds.
+# It's becoming more clear that the init has to make sure that children of
+# points entirely inside are also marked as entirely inside.
+
+# Also TODO: Output to PNG. (Use decided points and ckdtree for this,
+# although getting the effective resolution of the tree and dumping cells
+# into an appropriate array would be a lot faster. Do that later.)
+
+step(root)

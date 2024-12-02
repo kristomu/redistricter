@@ -110,6 +110,10 @@ class RQuadtree:
 			return b + (a-b)/2
 		return a + (b-a)/2
 
+	def _midpoint(self):
+		return tuple(self.upper_left +
+			(self.lower_right - self.upper_left)/2)
+
 	def _get_corners(self):
 		return set([
 			(self.upper_left[0], self.upper_left[1]),	# upper left
@@ -140,6 +144,12 @@ class RQuadtree:
 			# evaluate it; instead we better just wait until it's
 			# been split into areas that are fully inside.
 			if self.bound_state == RQ_BOUNDS_CROSSING:
+				return set()
+
+			# If we don't know a cell's state wrt the bounds,
+			# it might be partially or completely outside, so
+			# dont' return anything.
+			if self.bound_state == RQ_BOUNDS_UNKNOWN:
 				return set()
 
 			if self.point_state == RQP_UNDECIDED:
@@ -222,24 +232,30 @@ class RQuadtree:
 			self._update_bounds_state(bounding_square_ul,
 				bounding_square_lr, nat_upper_left, nat_lower_right)
 
-		if self.bound_state != RQ_BOUNDS_CROSSING:
-			return
+		# Then check our children. We need to do this even if we're
+		# a point that's entirely inside, because our children might
+		# have an unknown bound state.
+		# TODO: Do this in a more elegant way by figuring out a cell's
+		# bound state on initialization. But then we need to carry around
+		# the bounds everywhere, and I'm not sure how to do that yet.
 
-		# So we're a cell that's partly outside. Split if we don't
-		# already have children.
-
-		if self.leaf:
-			self.split()
-
-			# Set the children's bound statuses.
-			for child in self.children:
-				child._update_bounds_state(bounding_square_ul,
-					bounding_square_lr, nat_upper_left, nat_lower_right)
-		else:
-			# Otherwise check our children.
+		if not self.leaf:
+			# Check our children.
 			for child in self.children:
 				child.split_on_bounds(bounding_square_ul,
 					bounding_square_lr, nat_upper_left, nat_lower_right)
+
+		if self.bound_state == RQ_BOUNDS_CROSSING:
+			# So we're a cell that's partly outside. Split if we don't
+			# already have children.
+
+			if self.leaf:
+				self.split()
+
+				# Set the children's bound statuses.
+				for child in self.children:
+					child._update_bounds_state(bounding_square_ul,
+						bounding_square_lr, nat_upper_left, nat_lower_right)
 
 	# Assignments is a dictionary where the points are keys and
 	# the district assignments are values. An assignment of -1 means
@@ -272,4 +288,23 @@ class RQuadtree:
 				self.split()
 		else:
 			for child in self.children:
-				child.update_points_state(assignments)
+				child.split_on_points(assignments)
+
+	def get_decided_points(self):
+		if self.leaf:
+			if self.point_state == RQP_DECIDED and \
+				self.bound_state != RQ_BOUNDS_OUTSIDE:
+
+				return [(self._midpoint(), self.assigned_to)]
+			return []
+		else:
+			points = []
+
+			for child in self.children:
+				points += child.get_decided_points()
+
+			return points
+
+	# TODO: A function to get the points required for
+	# nearest-neighbor reconstruction: every decided point
+	# that neighbors an undecided point.
