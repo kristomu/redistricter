@@ -188,33 +188,26 @@ class RQuadtree:
 		self.children[3] = RQuadtree( (x[1], y[1]), (x[2], y[2]) ) 
 
 	# Determine the current node and children's bound state.
-	def _update_bounds_state(self, bounding_square_ul,
-		bounding_square_lr, nat_upper_left, nat_lower_right):
+	def _update_bounds_state(self, norm_span):
 
 		if self.bound_state != RQ_BOUNDS_UNKNOWN:
 			return # No need to check
 
-		# Assume that 1 is the whole range from bounding_square_ul
-		# to bounding_square_lr.
+		# If our lower right value is greater than the norm span
+		# in any direction, then we're partly or fully out of
+		# bounds.
 
-		span = (bounding_square_lr - bounding_square_ul)
+		# If, in addition, one or more of our *upper right* values
+		# exceed the norm span, then we're entirely outside.
 
-		# In what direction (if any) do we extend past the natural
-		# bounds in the upper (northwest) direction?
-		exceeds_upper = np.logical_or(
-			bounding_square_ul + span * self.upper_left < nat_upper_left,
-			bounding_square_ul + span * self.upper_left > nat_lower_right)
+		# Test the latter first.
 
-		exceeds_lower = np.logical_or(
-			bounding_square_ul + span * self.lower_right < nat_upper_left,
-			bounding_square_ul + span * self.lower_right > nat_lower_right)
-
-		if np.all(exceeds_upper) and np.all(exceeds_lower):
+		if np.any(self.upper_left > norm_span):
 			self.bound_state = RQ_BOUNDS_OUTSIDE
 			self.point_state = RQP_DECIDED
 			return
 
-		if np.any(exceeds_upper) or np.any(exceeds_lower):
+		if np.any(self.lower_right > norm_span):
 			self.bound_state = RQ_BOUNDS_CROSSING
 			return
 
@@ -223,14 +216,12 @@ class RQuadtree:
 	# Check if we're partially out of bounds, and if so, split.
 	# If we're a leaf node, completely out of bounds and don't know it,
 	# set our state to out_of_bounds as well.
-	def split_on_bounds(self, bounding_square_ul,
-		bounding_square_lr, nat_upper_left, nat_lower_right):
+	def split_on_bounds(self, norm_span):
 
 		# First determine our own bounds status if we don't know.
 
 		if self.bound_state == RQ_BOUNDS_UNKNOWN:
-			self._update_bounds_state(bounding_square_ul,
-				bounding_square_lr, nat_upper_left, nat_lower_right)
+			self._update_bounds_state(norm_span)
 
 		# Then check our children. We need to do this even if we're
 		# a point that's entirely inside, because our children might
@@ -242,8 +233,7 @@ class RQuadtree:
 		if not self.leaf:
 			# Check our children.
 			for child in self.children:
-				child.split_on_bounds(bounding_square_ul,
-					bounding_square_lr, nat_upper_left, nat_lower_right)
+				child.split_on_bounds(norm_span)
 
 		if self.bound_state == RQ_BOUNDS_CROSSING:
 			# So we're a cell that's partly outside. Split if we don't
@@ -254,8 +244,7 @@ class RQuadtree:
 
 				# Set the children's bound statuses.
 				for child in self.children:
-					child._update_bounds_state(bounding_square_ul,
-						bounding_square_lr, nat_upper_left, nat_lower_right)
+					child._update_bounds_state(norm_span)
 
 	# Assignments is a dictionary where the points are keys and
 	# the district assignments are values. An assignment of -1 means
@@ -305,6 +294,62 @@ class RQuadtree:
 
 			return points
 
-	# TODO: A function to get the points required for
-	# nearest-neighbor reconstruction: every decided point
-	# that neighbors an undecided point.
+	# When solving a districting problem, we need the undecided points,
+	# which we want to find the assignments for; and we also need the
+	# decided points to absorb the population that we've already found
+	# the proper assignment for, without having to add a lot of dummy
+	# variables to the MIP.
+
+	# This function gets the decided points neighboring the ones that
+	# are currently undecided. How this works in context of k-means is
+	# that these "boundary points" will be closest to every point that
+	# has been solved in some prior round.
+
+	def get_neighboring_decided_points(self, undecided_point_set):
+		if self.leaf:
+			if self.point_state == RQP_DECIDED:
+				corners = self._get_corners()
+
+				if len(corners.intersection(undecided_point_set)) > 0:
+					return set([(corner, self.assigned_to) for corner in corners])
+			return set()
+		else:
+			output_set = set()
+
+			for child in self.children:
+				output_set = output_set.union(
+					child.get_neighboring_decided_points(undecided_point_set))
+
+			return output_set
+
+	# Render the quadtree into a linear array (picture).
+	# Perhaps do something that will fill out the -1s along the
+	# boundaries as those will never really go away... not sure what
+	# that would be, though.
+	def _linearize(self, resolution, array):
+		# By induction, the whole cell should be at least
+		# a pixel wide. If we're not a leaf, check if our
+		# children are at least a pixel wide. If they are,
+		# recurse. Otherwise draw our values to the array.
+		if not self.leaf:
+			if (resolution * (self.lower_right[0]-self.upper_left[0])) > 0.5:
+				for child in self.children:
+					child._linearize(resolution, array)
+				return
+
+
+		start = np.round(resolution * self.upper_left).astype(int)
+		end = np.round(resolution * self.lower_right).astype(int)
+
+		# Y first.
+		array[start[1]:end[1], start[0]:end[0]] = self.assigned_to
+
+	def linearize(self, resolution):
+		# TODO: Fill with None or -2 or something so we can
+		# tell them apart from district zero if something goes
+		# wrong.
+		x = np.zeros([resolution, resolution])
+
+		self._linearize(resolution, x)
+
+		return x

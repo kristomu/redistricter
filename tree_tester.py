@@ -15,8 +15,18 @@ nat_lower_right = np.array((1, 0.5))
 bounding_square_ul = nat_upper_left
 bounding_square_lr = np.array([np.max(nat_lower_right), np.max(nat_lower_right)])
 
-# The point must be in natural units, i.e. the units above, not
-# the quadtree's 0..2**64 scale.
+# The quadtree uses "normalized" units, where the root cell ranges from 0 to 1 on
+# both axes, with (0,0) anchored at the upper left of the natural bounding
+# rectangle. This means that unless our input is a square, parts of the tree will
+# be out of bounds.
+
+# At some point I should factor this properly. (Doing so is doubly important in
+# Python because entropy *will* kick your ass.) But let's get it working first.
+
+# This gives the lower right of the bounding rectangle in normalized units.
+
+norm_span = (nat_lower_right - nat_upper_left) / \
+	(np.array(bounding_square_lr) - nat_upper_left)
 
 def get_value(point):
 
@@ -41,8 +51,7 @@ def step(root):
 	# also have to get adjacent *decided* points to assign the known population
 	# assigned to a district to. But that's for later.)
 
-	root.split_on_bounds(bounding_square_ul, bounding_square_lr,
-		nat_upper_left, nat_lower_right)
+	root.split_on_bounds(norm_span)
 	undecideds = root.get_undecided_points()
 
 	# Resolve them and update the cells' statuses.
@@ -52,14 +61,7 @@ def step(root):
 
 	print(root.get_decided_points())
 
-# Repeat this function as many times as you'd like.
+# Repeat step() as many times as you'd like, e.g...
 
-# TODO: Optimization. Particularly when dealing with split_on_bounds.
-# It's becoming more clear that the init has to make sure that children of
-# points entirely inside are also marked as entirely inside.
-
-# Also TODO: Output to PNG. (Use decided points and ckdtree for this,
-# although getting the effective resolution of the tree and dumping cells
-# into an appropriate array would be a lot faster. Do that later.)
-
-step(root)
+for i in range(5):
+	step(root)
