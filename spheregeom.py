@@ -1,5 +1,7 @@
 # Spherical geometry stuff
 
+import numpy as np
+
 # https://stackoverflow.com/a/20360045
 # Input coordinates are in radians.
 def LLHtoECEF_rad(r_lat, r_lon, alt):

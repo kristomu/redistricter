@@ -56,6 +56,28 @@ The inheritance rules are:
 	If all our children are out of bounds, so are we.
 '''
 
+# TODO?? Mark fractionally assigned stuff as different from
+# undecided, if just for the linearization, so that we can do
+# nearest neighbor on the borders without overwriting fractional
+# assignments?
+
+# TODO?? Use an external distance function to determine when
+# sub-regions of a cell are forced to have a particular assignment,
+# and then splitting on these and calling them decided?
+# E.g. if the distance is Euclidean and both top points as well
+# as the bottom left one are the same district, then the top left
+# sub-cell must belong to that district.
+# And if the population enclosed is zero then we can get an exact
+# result by just finding the curve of equal distance from both
+# district centers.
+# I've found out that we're going to need some pruning to make
+# the method anywhere near realistic.
+
+# It should also keep every resolved point so that, when it's
+# asked to draw something, it can go off the current points
+# instead of being very conservative and only outputting decided
+# cells.
+
 import numpy as np
 
 # These are the vertex states. Undecided means we don't know,

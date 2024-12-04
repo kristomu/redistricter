@@ -1,5 +1,12 @@
 # Trying to reimplement the LP stuff to use quadtrees.
 
+# detected bugs: I must be multiplying by the span somewhere that I shouldn't,
+# because it's creating a box that has got the right aspect ratio, but it's
+# canceling out the aspect ratio calculation somewhere inside, so everything
+# gets stretched. In this case, I have a 2:1 aspect ratio (rotated due to lat/long
+# issues), and it stretches the vertical coordinates in a way that would make sense
+# if it were rendering something with an 2:1 aspect anamorphically on an 1:1 output.
+
 from parse_dbf import get_state_names, get_census_block_data
 from scipy.spatial import cKDTree, Delaunay
 import numpy as np
@@ -19,9 +26,31 @@ from quant_tools import grid_dimensions
 
 from quadtree import RQuadtree
 
-# Normalized coordinates to natural ones
+# Normalized coordinates to natural ones.
 def to_natural(normalized, minimum_point, maximum_point):
-	return minimum_point + np.array(normalized) * (maximum_point-minimum_point)
+	latlong = minimum_point + np.array(normalized) * (bounding_square_lr - minimum_point)
+	return latlong
+
+def write_image(filename, resolution, quadtree):
+
+	# Transpose because the quadtree has latitudes assigned to its
+	# x coordinate and longitudes to its y coordinate.
+	image_space_claimants = quadtree.linearize(resolution).T.astype(np.int8)
+	claimed_num_districts = (int)(np.max(image_space_claimants)+1)
+
+	print(image_space_claimants, claimed_num_districts)
+
+	# Create some random colors.
+	colors = np.random.randint(256, size = (claimed_num_districts, 3),
+		dtype=np.uint8)
+
+	# Color mixed claims grey.
+	colors = np.vstack([colors, [127, 127, 127]])
+	image_space_claimants[image_space_claimants==-1] = claimed_num_districts
+
+	# And save!
+	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
+	image.save(filename, "PNG")
 
 # 1. Get coordinates and populations
 #	  Use Colorado for now.
@@ -83,7 +112,7 @@ for index in district_indices:
 district_coords = np.array(district_coords)
 district_latlon = np.array(district_latlon)
 
-for i in range(4):
+for i in range(8):
 	print("Iteration", i)
 	# QT
 	# TODO: Fix quadtree bug where incredibly narrow rectangles

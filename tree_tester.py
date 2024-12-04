@@ -13,7 +13,9 @@ nat_upper_left = np.array((0, 0))
 nat_lower_right = np.array((1, 0.5))
 
 bounding_square_ul = nat_upper_left
-bounding_square_lr = np.array([np.max(nat_lower_right), np.max(nat_lower_right)])
+bounding_square_lr = nat_upper_left + np.array([
+	np.max(nat_lower_right-nat_upper_left),
+	np.max(nat_lower_right-nat_upper_left)])
 
 # The quadtree uses "normalized" units, where the root cell ranges from 0 to 1 on
 # both axes, with (0,0) anchored at the upper left of the natural bounding
