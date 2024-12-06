@@ -172,12 +172,13 @@ def HCKM_thm_4_compactness(num_districts, num_gridpoints,
 	#	v_ik <= (1 - assign_binary[i, x]) * 2*M + dist[k, x] - dist[i, x].
 
 	# I'll tweak this M later and perhaps introduce a way to get
-	# a more precise bound for it. We need M to be the greatest value of
-	# dist[k,x] - dist[i,x] over every x possible. A looser bound that
-	# doesn't depend on the locations of districts is two times the
-	# maximum distance between two points.
+	# a more precise bound for it. It would seem clear that with this
+	# choice of M, the constraint can't make a difference if assign[i][p]
+	# is 0, since even in the worst case, 2*M - dist[k][p] - dist[i][p] >
+	# max p: dist[k][p] - dist[i][p]. But I'm not quite sure about my
+	# own reasoning.
 
-	M = 1e9 # TBD
+	M = np.max(district_point_dist)
 
 	constraints = []
 	v = cp.Variable((num_districts, num_districts))
@@ -186,6 +187,8 @@ def HCKM_thm_4_compactness(num_districts, num_gridpoints,
 		for k in range(num_districts):
 			if i == k:
 				continue
+
+			print(M)
 
 			for p in range(num_gridpoints):
 				constraints.append(v[i][k] <= (1 - assign_binary[i][p]) * 2*M +
