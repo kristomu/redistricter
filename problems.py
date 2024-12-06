@@ -121,8 +121,8 @@ def HCKM_exact_compactness(num_districts, num_gridpoints,
 		write = lambda string: None
 		update = lambda num_processed: None
 
-	### Compactness constraints
-	### These are from https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
+	### Compactness constraints form Janáček and Gábrišová.
+	### https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
 
 	for district_one in range(num_districts):
 		write(str(district_one))
@@ -154,6 +154,46 @@ def HCKM_exact_compactness(num_districts, num_gridpoints,
 		pbar.close()
 
 	return compactness_constraints
+
+# From Janáček and Gábrišová, page 278.
+
+def HCKM_thm_4_compactness(num_districts, num_gridpoints,
+		district_point_dist, assign_binary):
+
+	# Let v_ik(x) be the difference dist[k, x] - dist[i, x].
+	# Let v_ik be the minimum such value over every point x
+	# assigned to i.
+
+	# Then districts are compact if -v_ik <= v_ki for all pairs
+	# of districts i and k.
+
+	# We use a big M method for this:
+
+	#	v_ik <= (1 - assign_binary[i, x]) * 2*M + dist[k, x] - dist[i, x].
+
+	# I'll tweak this M later and perhaps introduce a way to get
+	# a more precise bound for it. We need M to be the greatest value of
+	# dist[k,x] - dist[i,x] over every x possible. A looser bound that
+	# doesn't depend on the locations of districts is two times the
+	# maximum distance between two points.
+
+	M = 1e9 # TBD
+
+	constraints = []
+	v = cp.Variable((num_districts, num_districts))
+
+	for i in range(num_districts):
+		for k in range(num_districts):
+			if i == k:
+				continue
+
+			for p in range(num_gridpoints):
+				constraints.append(v[i][k] <= (1 - assign_binary[i][p]) * 2*M +
+					district_point_dist[k][p] - district_point_dist[i][p])
+
+			constraints.append(-v[i][k] <= v[k][i])
+
+	return constraints
 
 # NOTE about HCKM: Using a very large number of candidate districts and
 # a small number of desired districts leads SCIP to almost immediately

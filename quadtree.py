@@ -78,6 +78,15 @@ The inheritance rules are:
 # instead of being very conservative and only outputting decided
 # cells.
 
+# TODO?? Let the support of a point be the districts that have
+# nonzero weight assignment to that point. Then every point
+# inside a cell must be assigned to one of the districts that
+# is supported on one of its corner points.
+# This means that e.g. if all four points are either red or green,
+# then no point inside can belong to a yellow district, given
+# compactness constraints. That could drastically cut down on the
+# number of variables in the MIP.
+
 import numpy as np
 
 # These are the vertex states. Undecided means we don't know,
