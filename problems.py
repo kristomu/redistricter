@@ -35,129 +35,7 @@ what selection is best.
 # and do the right thing. TODO: add these to the object itself and use self.assign
 # and/or self.assign_binary as appropriate.
 
-# Both are very slow and introduce a ton of constraints. They scale
-# as num districts^2 * num points^2 - it's going to be real fun when
-# we get to California...
-
-# TODO: Put these in classes, too, and let the k-means constructors
-# accept them. Add support for relaxed compactness that doesn't use
-# binaries. (so the compactness constraint class should have
-# self.requires_assign_binaries or something like.)
-# Then try compactness, 100 points, 8-of-16 district centers, and check
-# what the solving speed is like. The continuous assign version would
-# work as upper bounds, branch and bound style.
-
-def HCKM_relaxed_compactness(num_districts, num_gridpoints,
-		district_point_dist, assign_binary, show_progress=True):
-
-	compactness_constraints = []
-	estimated_num_constraints = num_districts * (num_districts-1) / 2 * \
-		num_gridpoints * (num_gridpoints-1)
-
-	if show_progress:
-		pbar = tqdm(total = estimated_num_constraints)
-		write = lambda string: pbar.write(string)
-		update = lambda num_processed: pbar.update(num_processed)
-	else:
-		write = lambda string: None
-		update = lambda num_processed: None
-
-	for district_one in range(num_districts):
-		write(str(district_one))
-		for district_two in range(district_one+1, num_districts):
-			write(f"\t{district_two}")
-			for x in range(num_gridpoints):
-				x_to_d1 = district_point_dist[district_one][x]
-				x_to_d2 = district_point_dist[district_two][x]
-
-				# TODO: Explanation here about how this is a relaxation
-
-				if x_to_d1 > x_to_d2:
-					update(num_gridpoints)
-					continue
-
-				for y in range(num_gridpoints):
-					update(1)
-					if x == y: continue
-					y_to_d1 = district_point_dist[district_one][y]
-					y_to_d2 = district_point_dist[district_two][y]
-
-					if y_to_d1 < y_to_d2: continue
-
-					compactness_constraints.append(
-						x_to_d1 * assign_binary[district_one][x] + \
-						y_to_d2 * assign_binary[district_two][y] <= \
-						x_to_d2 * assign_binary[district_one][x] + \
-						y_to_d1 * assign_binary[district_two][y])
-
-					# Another attempt can be found below; it doesn't work,
-					# but when I mistyped it as x, y, x, y, which is
-					# essentially a NOP, that made cvxpy crash... Maybe
-					# make a bug example for this later.
-					'''
-					compactness_constraints.append(
-						assign[district_one][x] + \
-						assign[district_two][y] >= \
-						assign[district_one][y] + \
-						assign[district_two][x])
-					'''
-	if show_progress:
-		pbar.close()
-
-	return compactness_constraints
-
 def HCKM_exact_compactness(num_districts, num_gridpoints,
-		district_point_dist, assign_binary, show_progress=True):
-
-	compactness_constraints = []
-	estimated_num_constraints = num_districts * (num_districts-1) / 2 * \
-		num_gridpoints **2
-
-	if show_progress:
-		pbar = tqdm(total = estimated_num_constraints)
-		write = lambda string: pbar.write(string)
-		update = lambda num_processed: pbar.update(num_processed)
-	else:
-		write = lambda string: None
-		update = lambda num_processed: None
-
-	### Compactness constraints form Janáček and Gábrišová.
-	### https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
-
-	for district_one in range(num_districts):
-		write(str(district_one))
-		for district_two in range(district_one+1, num_districts):
-			for x in range(num_gridpoints):
-				x_to_d1 = district_point_dist[district_one][x]
-				x_to_d2 = district_point_dist[district_two][x]
-
-				for y in range(num_gridpoints):
-					update(1)
-					if x == y: continue
-					y_to_d1 = district_point_dist[district_one][y]
-					y_to_d2 = district_point_dist[district_two][y]
-
-					# TODO: Strictly speaking, we should be maximally
-					# generous since we're working on a low res version
-					# of the problem. So we should choose x and y points
-					# to minimize (x_to_d1 + y_to_d2 - x_to_d2 - y_to_d1).
-
-					# If we could benefit by swapping d1 and d2's
-					# allocations of these points...
-					if x_to_d1 + y_to_d2 > x_to_d2 + y_to_d1:
-						# then that allocation mustn't happen.
-						compactness_constraints.append(
-							assign_binary[district_one][x] + \
-							assign_binary[district_two][y] <= 1)
-
-	if show_progress:
-		pbar.close()
-
-	return compactness_constraints
-
-# From Janáček and Gábrišová, page 278.
-
-def HCKM_thm_4_compactness(num_districts, num_gridpoints,
 		district_point_dist, assign_binary):
 
 	# Let v_ik(x) be the difference dist[k, x] - dist[i, x].
@@ -184,11 +62,10 @@ def HCKM_thm_4_compactness(num_districts, num_gridpoints,
 	v = cp.Variable((num_districts, num_districts))
 
 	for i in range(num_districts):
+		print(i)
 		for k in range(num_districts):
 			if i == k:
 				continue
-
-			print(M)
 
 			for p in range(num_gridpoints):
 				constraints.append(v[i][k] <= (1 - assign_binary[i][p]) * 2*M +
@@ -263,6 +140,9 @@ class HardCapacitatedKMeans:
 		'''
 
 		sq_district_point_dist = district_point_dist ** 2
+		adj_block_populations = block_populations/np.sum(block_populations)
+		# tiebreak
+		adj_block_populations[adj_block_populations==0] = 1e-6
 
 		# Get the number of candidate districts to choose from
 		num_districts = len(sq_district_point_dist)
@@ -286,7 +166,7 @@ class HardCapacitatedKMeans:
 		# Unlike uncapacitated, the objective function should not
 		# multiply by the block population. (I think?)
 		for district_idx in range(num_districts):
-			squared_distances_to_center += sq_district_point_dist[district_idx] @ self.assign[district_idx]
+			squared_distances_to_center += (sq_district_point_dist[district_idx] * adj_block_populations) @ self.assign[district_idx]
 
 		# (2) Define the assignment values as fractions, and force to zero if
 		#	  the district is inactive.
