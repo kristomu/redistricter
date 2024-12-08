@@ -75,6 +75,75 @@ def HCKM_exact_compactness(num_districts, num_gridpoints,
 
 	return constraints
 
+def weighted_voronoi_constraint(num_districts, num_gridpoints,
+		district_point_dist, assign_binary):
+
+	# This emulates a "Voronoi" constraint where each point closer to A
+	# than to B is barred from being assigned to B, but where each
+	# district also has a weight that determines its "force" on the
+	# points. This emulates the result of using an iterative method like
+	# the moments of inertia method by Hess et al., but finding the
+	# actual global optimum instead of a local one.
+
+	# https://pubsonline.informs.org/doi/abs/10.1287/opre.13.6.998
+
+	# Currently rather hacky.
+
+	weight = cp.Variable(num_districts)
+
+	constraints = []
+
+	M = np.max(district_point_dist)**2
+	g = 112 # ???
+
+	for i in range(num_districts):
+		for k in range(num_districts):
+			if i == k:
+				continue
+
+			for p in range(num_gridpoints):
+				# If the point is associated to district i and we have infinite
+				# resolution, then we would want
+				# weight[i] * dist[i, p]**2 < weight[k] * dist[k, p]**2
+				# for all other districts k.
+
+				# Since we don't have infinite resolution, we must be generous to
+				# the other districts k and let them potentially fractionally claim
+				# the same grid square, by only asserting
+
+				# weight[i] * dist[i, p]**2 < weight[k] * ( dist[k, p]**2 + g**2)
+
+				# for some fudge factor g of magnitude similar to the distance
+				# between two adjacent points. (I haven't yet figured out how to
+				# set this g.)
+
+				# A big M approach and relaxing the strict inequality gives
+
+				# weight[i] * dist[i, p]**2 <= weight[k] * ( dist[k, p]**2 + g**2) +
+				#	(1 - assign_binary[i, p]) * 2 * M.
+
+				# Potentially this can be tightened up by involving assign[k, p]
+				# with g so that it's treated differently if k claims nearly all
+				# of the point and if it claims just a part of it. Ponder this later.
+
+				constraints.append(
+					weight[i] * district_point_dist[i][p]**2 <= \
+					weight[k] * (district_point_dist[k][p]**2 + g**2) + \
+					(1 - assign_binary[i][p]) * 2 * M)
+
+				''' The old one was:
+				constraints.append(
+					(1 - assign_binary[i][p]) * 2*M + \
+					weight[k] * district_point_dist[k][p]**2 - \
+					weight[i] * (district_point_dist[k][p] - f)**2 >= 0)
+				'''
+
+		constraints.append(weight[i] >= 0)
+
+	constraints.append(cp.sum(weight) == 1)
+
+	return constraints
+
 # NOTE about HCKM: Using a very large number of candidate districts and
 # a small number of desired districts leads SCIP to almost immediately
 # find the proper primal bound. It then spends an extremely long time
