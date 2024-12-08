@@ -25,6 +25,7 @@ def LLHtoECEF_latlon(lat, lon, alt):
 	return LLHtoECEF_rad(np.radians(lat), np.radians(lon), alt)
 
 # https://stackoverflow.com/a/29546836
+# Output is in kilometers.
 def haversine_np(lat1, lon1, lat2, lon2):
     """
     Calculate the great circle distance between two points

@@ -35,6 +35,9 @@ what selection is best.
 # and do the right thing. TODO: add these to the object itself and use self.assign
 # and/or self.assign_binary as appropriate.
 
+# From Janáček and Gábrišová, theorem 4.
+# https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
+
 def HCKM_exact_compactness(num_districts, num_gridpoints,
 		district_point_dist, assign_binary):
 
