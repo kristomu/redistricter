@@ -197,23 +197,15 @@ def get_aspect_ratio(minimum_point, maximum_point):
 def create_grid(grid_points, minimum_point, maximum_point):
 	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
 
-	# Get roughly the desired number of grid points at roughly the right
-	# aspect ratio by rounding off square roots.
-	# NOTE: I could change this now that I have quant_tools.grid_dimensions, but
-	# I would no longer be able to compare objective values to earlier versions'
-	# values since the problem would change. It might be best to do it anyway...
-	# later.
-
-	long_axis_points = int(np.round(np.sqrt(grid_points) * aspect_ratio))
-	lat_axis_points = int(np.round(np.sqrt(grid_points) / aspect_ratio))
+	height, width, error = grid_dimensions(grid_points, aspect_ratio)
 
 	# When we plot figures on screen, (0, 0) is upper left. However, latitudes are
 	# greater the closer they are to the North pole. To make maps come out the right
 	# way, we thus need to make earlier latitudes higher. That's why the maximum
 	# and minimum points are swapped here.
 
-	lats = np.linspace(maximum_point[0], minimum_point[0], lat_axis_points)
-	lons = np.linspace(minimum_point[1], maximum_point[1], long_axis_points)
+	lats = np.linspace(maximum_point[0], minimum_point[0], height)
+	lons = np.linspace(minimum_point[1], maximum_point[1], width)
 
 	grid_coords = []
 	grid_latlon = []
@@ -222,7 +214,7 @@ def create_grid(grid_points, minimum_point, maximum_point):
 		grid_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		grid_latlon.append([lat, lon])
 
-	return np.array(grid_latlon), np.array(grid_coords), long_axis_points
+	return np.array(grid_latlon), np.array(grid_coords), width
 
 # max_seconds is the max number of seconds the solver should spend solving.
 # It's useful for HCKM problems with a very large number of candidate points,
@@ -423,10 +415,10 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
 	print_claimant_array(two_dim_claimants)
 
-	pixels = 300**2 # e.g., total number of pixels used in output image.
+	pixels = 600**2 # e.g., total number of pixels used in output image.
 
 	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
-	write_image("output.png", pixels, aspect_ratio, block_data)
+	write_image(f"output_test_voronoi_pop_{chosen_districts[0]}_points{grid_points}.png", pixels, aspect_ratio, block_data)
 
 	return objective_value, chosen_districts, relative_stddev
 
@@ -492,9 +484,14 @@ district_indices = None
 # district_indices = [1942, 4332, 29611, 37589, 39503, 102295, 119431, 136323]
 # district_indices = [5377, 25548, 29624, 45261, 52434, 73520, 90033, 112030]
 # district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
+# district_indices = [2067, 17262, 20419, 24657, 26253, 52238, 102279, 136267]
+# district_indices = [18937, 19979, 74671, 83626, 97369, 107272, 123089, 130918]
+# district_indices = [1100, 60990, 64540, 65189, 84319, 84798, 88665, 90398]
 
 # Good uncapacitated scores or relative std devs:
 # district_indices = [30054, 47476, 59892, 61154, 72719, 98886, 120521,134888] #(score)
 # district_indices = [26905, 28861, 65810, 71157, 88867, 104151,114789,138225] #stddev
+
+# district_indices = [1942, 4332, 29611, 37589, 39503, 102295, 119431, 136323]
 
 run(district_indices)

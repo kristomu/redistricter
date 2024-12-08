@@ -89,12 +89,23 @@ def weighted_voronoi_constraint(num_districts, num_gridpoints,
 
 	# Currently rather hacky.
 
+	# It could also potentially be ported to center-less if I do that
+	# later: just use the implicit centroid distance. The difficult part
+	# would be to remove the dependency on g. I have ideas for how to do
+	# that when the district centers are known, but they're harder to do
+	# if the district centers are unknown.
+
+	# Forcing all weights to be one would have a nice physical
+	# interpretation: "each district is assigned the points closer to it
+	# than to any other district". But it would almost certainly mean
+	# giving up on hard capacities.
+
 	weight = cp.Variable(num_districts)
 
 	constraints = []
 
 	M = np.max(district_point_dist)**2
-	g = 112 # ???
+	g = 112 # ??? for 500 pts, and even then it's not exact.
 
 	for i in range(num_districts):
 		for k in range(num_districts):
