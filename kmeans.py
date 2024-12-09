@@ -1,6 +1,7 @@
-from parse_dbf import get_state_names, get_census_block_data
+from scipy.optimize import minimize_scalar, minimize, basinhopping
 import numpy as np
 
+from parse_dbf import get_state_names, get_census_block_data
 from spheregeom import *
 
 # Simple implementation of local search weighted k-means on a census block
@@ -39,9 +40,7 @@ for block in block_data:
 	minimum_point = np.minimum(minimum_point, coords)
 	maximum_point = np.maximum(maximum_point, coords)
 
-
-def fit_kmeans_weights(district_indices, verbose=False):
-
+def fit_kmeans_weights(district_indices):
 	num_districts = len(district_indices)
 
 	block_populations = np.array(
@@ -51,58 +50,92 @@ def fit_kmeans_weights(district_indices, verbose=False):
 		[[block["lat"], block["long"]] for block in block_data])
 
 	district_latlongs = [block_latlongs[i] for i in district_indices]
-
 	district_block_distances = np.array([haversine_center(dl, block_latlongs)
 		for dl in district_latlongs])
-	pop_square_dists = district_block_distances**2 * block_populations + district_block_distances**2 * 1e-9 # tiebreak
+
+	pop_square_dists = district_block_distances**2 * block_populations + \
+		district_block_distances**2 * 1e-9 # Break ties by distance.
 
 	alpha = 1
 	weights = np.array([1] * num_districts)
-	record = np.inf
+	record_dev = np.inf
 	record_weights = []
-	record_association = []
+
+	# This function makes it easy to use scipy optimization methods,
+	# but they tend only to be useful for very bad fits. See below.
+
+	def check_population_dist(proposed_weights):
+		weighted_square_dists = (pop_square_dists.T * proposed_weights).T
+		associated_districts = np.argmin(weighted_square_dists, axis=0)
+
+		district_pops = np.array([np.sum(block_populations[
+			associated_districts == x]) for x in range(num_districts)])
+
+		return np.std(district_pops)
+
+	def print_new_minimum(x, f, accepted):
+		if accepted:
+			print(f"at minimum {f:.4f}, accepted")
+		else:
+			print(f"at minimum {f:.4f}, rejected")
 
 	for j in range(10):
 		print(f"Pass {j}")
 		for i in range(150):
 			old_weights = np.copy(weights)
 			weighted_square_dists = (pop_square_dists.T * weights).T
-
 			associated_districts = np.argmin(weighted_square_dists, axis=0)
 
 			district_pops = np.array([np.sum(block_populations[associated_districts == x])
 				for x in range(num_districts)])
+			std_dev = np.std(district_pops)
 
-			# There probably exists better update schedules. Find one later.
-			# Janáček and Gábrišová uses an additive update. I could also use
-			# some kind of line search, e.g. golden section, here.
+			if std_dev < record_dev:
+				record_dev = std_dev
+				record_weights = np.copy(weights)
+
+			# Update the weights based on current imbalances.
+			# There probably exist better update schedules, but this seems OK
+			# for now. Janáček and Gábrišová uses an additive update.
 			weights = (1-alpha) * weights + alpha * weights * district_pops/np.sum(district_pops)
 			if np.sum(weights) == 0:
 				weights = np.array([1] * num_districts)
 
 			weights = weights / np.sum(weights)
 
-			std_dev = np.std(district_pops)
-
-			if verbose:
-				print(f"Iteration {i}: performance: max-min: {np.max(district_pops)-np.min(district_pops)}, "
-					f"std dev.: {std_dev}")
-
-			if std_dev < record:
-				record = std_dev
-				record_weights = np.copy(weights)
-				record_association = np.copy(associated_districts)
-
 		weights = np.copy(record_weights)
 		alpha = alpha * 0.9
+
+	# We could do something like this to try to find an optimum using scipy.
+	# This greatly improves bad fits (where std. devs are in the order of tens of
+	# thousands), but such fits are not very useful anyway, and the search would
+	# slow down the process for good fits, so I've left it disabled by default.
+
+	use_global_optimizer = False
+
+	if use_global_optimizer:
+		global_opt = basinhopping(check_population_dist, x0=record_weights,
+			minimizer_kwargs={"method": "Powell"}, niter_success=4,
+			callback=print_new_minimum)
+		if global_opt.fun < record_dev:
+			record_weights = global_opt.x/np.sum(global_opt.x)
+			record_dev = global_opt.fun
+
+	# Recalculate assignment from record.
+	weighted_square_dists = (pop_square_dists.T * record_weights).T
+	record_association = np.argmin(weighted_square_dists, axis=0)
+
+	district_pops = np.array([np.sum(block_populations[
+		record_association == x]) for x in range(num_districts)])
 
 	# Get the sum of squared distances from the centers as the objective.
 	district_penalties = [np.sum(pop_square_dists[i][record_association == i])
 		for i in range(num_districts)]
 	distance_penalty = np.sum(district_penalties) / total_population
-	pop_penalty = record # standard deviation
+	pop_penalty = np.std(district_pops) # standard deviation
+	pop_maxmin = np.max(district_pops)-np.min(district_pops)
 
-	return distance_penalty, pop_penalty
+	return distance_penalty, pop_penalty, pop_maxmin
 
 def fit_and_print(district_indices):
 	distance_penalty, pop_penalty = fit_kmeans_weights(district_indices)
@@ -163,9 +196,9 @@ def test():
 				(37696.509, 108042.33)}
 
 	for proposed_centers in centers_of_interest:
-		distance_penalty, pop_penalty = fit_kmeans_weights(proposed_centers)
+		distance_penalty, pop_penalty, pop_maxmin = fit_kmeans_weights(proposed_centers)
 
-		print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f} for {str(proposed_centers)}")
+		print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(proposed_centers)}")
 
 		reference_dist, reference_pop = reference_penalties[
 				tuple(proposed_centers)]
