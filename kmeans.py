@@ -115,7 +115,7 @@ def fit_kmeans_weights(district_indices):
 
 	if use_global_optimizer:
 		global_opt = basinhopping(check_population_dist, x0=record_weights,
-			minimizer_kwargs={"method": "Powell"}, niter_success=4,
+			minimizer_kwargs={"method": "Powell"}, niter_success=10,
 			callback=print_new_minimum)
 		if global_opt.fun < record_dev:
 			record_weights = global_opt.x/np.sum(global_opt.x)
@@ -138,9 +138,9 @@ def fit_kmeans_weights(district_indices):
 	return distance_penalty, pop_penalty, pop_maxmin
 
 def fit_and_print(district_indices):
-	distance_penalty, pop_penalty = fit_kmeans_weights(district_indices)
+	distance_penalty, pop_penalty, pop_maxmin = fit_kmeans_weights(district_indices)
 
-	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f} for {str(proposed_centers)}")
+	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(district_indices)}")
 
 def test():
 	# Test some very good (and very bad) district center assignments.
@@ -152,6 +152,8 @@ def test():
 		[19997, 23780, 88292, 91381, 117998, 123480, 124476, 130672],
 
 		# Good distances
+		[15242, 23733, 63447, 86133, 89922, 104716, 125226, 131351],
+		[12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428],
 		[19042, 23317, 47997, 62936, 69916, 84834, 107600, 125567],
 		[1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682],
 		[17751, 35038, 73583, 74619, 84595, 96107, 107911, 128978],
@@ -174,6 +176,10 @@ def test():
 			(24944, 57408, 71309): (29376.828, 6.94),
 			(19997, 23780, 88292, 91381, 117998, 123480, 124476, 130672):
 				(5080.133, 9.61),
+			(15242, 23733, 63447, 86133, 89922, 104716, 125226, 131351):
+				(3903, 69),
+			(12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428):
+				(3968, 30),
 			(19042, 23317, 47997, 62936, 69916, 84834, 107600, 125567):
 				(3951.410, 54.78),
 			(1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682):
