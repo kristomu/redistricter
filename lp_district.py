@@ -15,7 +15,6 @@
 	7. Solve it.
 '''
 
-from parse_dbf import get_state_names, get_census_block_data
 from scipy.spatial import cKDTree, Delaunay
 import numpy as np
 import cvxpy as cp
@@ -28,6 +27,7 @@ import subprocess
 
 from PIL import Image
 
+from region import Region
 from problems import *
 from spheregeom import *
 from quant_tools import grid_dimensions
@@ -98,16 +98,16 @@ def print_claimant_array(claimants):
 				printout_string += str(cell)
 		print(printout_string)
 
-def write_image(filename, pixels, aspect_ratio, census_block_data):
+def write_image(filename, pixels, aspect_ratio, region):
 
 	height, width, error = grid_dimensions(pixels, aspect_ratio)
 
 	# See below for why max and min is swapped for latitudes.
-	img_lats = np.linspace(maximum_point[0], minimum_point[0], height)
-	img_lons = np.linspace(minimum_point[1], maximum_point[1], width)
+	img_lats = np.linspace(region.maximum_point[0], region.minimum_point[0], height)
+	img_lons = np.linspace(region.minimum_point[1], region.maximum_point[1], width)
 
 	# Create a kd tree containing the coordinates of each census block.
-	block_coords = [x["coords"] for x in census_block_data]
+	block_coords = [x["coords"] for x in region.block_data]
 	block_tree = cKDTree(block_coords)
 
 	# XXX: Could use a Delaunay triangulation of the census blocks to check each
@@ -122,8 +122,8 @@ def write_image(filename, pixels, aspect_ratio, census_block_data):
 	# region (state) itself. (Or extract a polygon for the state and use polygon
 	# checking against it.)
 
-	# This can be vectorized for great speedups (see above how to vectorize
-	# LLHtoECEF), but I want to get it working first.
+	# Creating an assignment array the way kmeans does is probably the better
+	# choice here. TODO later.
 
 	image_space_claimants = []
 
@@ -132,7 +132,7 @@ def write_image(filename, pixels, aspect_ratio, census_block_data):
 		for img_long in img_lons:
 			img_coord = LLHtoECEF_latlon(img_lat, img_long, mean_radius)
 			block_idx = block_tree.query(img_coord)[1]
-			claimant = census_block_data[block_idx]["claimant"]
+			claimant = region.block_data[block_idx]["claimant"]
 			image_space_line.append(claimant)
 		image_space_claimants.append(image_space_line)
 
@@ -151,34 +151,8 @@ def write_image(filename, pixels, aspect_ratio, census_block_data):
 	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
 	image.save(filename, "PNG")
 
-# 1. Get coordinates and populations
-#	  Use Colorado for now.
-state_names = get_state_names()
-block_data = get_census_block_data("tl_2023_08_tabblock20.dbf",
-	state_names)
-
-# 2. Convert to 3D points with fixed altitude; and 3. create a bounding box
-mean_radius = 6371 # mean distance from the center of the Earth
-
-# Bounding box coordinates are in latitude/longitude, not radian format
-minimum_point = None
-maximum_point = None
-
-for block in block_data:
-	coords = np.array([block["lat"], block["long"]])
-
-	radian_coords = np.radians(coords)
-
-	block["coords"] = LLHtoECEF_rad(
-		radian_coords[0], radian_coords[1], mean_radius)
-
-	if minimum_point is None:
-		minimum_point = coords
-	if maximum_point is None:
-		maximum_point = coords
-
-	minimum_point = np.minimum(minimum_point, coords)
-	maximum_point = np.maximum(maximum_point, coords)
+# Get coordinates and populations. Use Colorado for now.
+colorado = Region("tl_2023_08_tabblock20.dbf")
 
 grid_points = 100
 
@@ -186,16 +160,8 @@ grid_points = 100
 # minimum_point is the minimum latitude and longitude of the bounding box
 # surrounding the state. maximum_point ditto with the maximum.
 
-def get_aspect_ratio(minimum_point, maximum_point):
-	NS_distance = haversine_np(minimum_point[0], minimum_point[1],
-		maximum_point[0], minimum_point[1])
-	EW_distance = haversine_np(minimum_point[0], minimum_point[1],
-		minimum_point[0], maximum_point[1])
-
-	return EW_distance/NS_distance
-
-def create_grid(grid_points, minimum_point, maximum_point):
-	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
+def create_grid(grid_points, region):
+	aspect_ratio = region.get_aspect_ratio()
 
 	height, width, error = grid_dimensions(grid_points, aspect_ratio)
 
@@ -204,8 +170,8 @@ def create_grid(grid_points, minimum_point, maximum_point):
 	# way, we thus need to make earlier latitudes higher. That's why the maximum
 	# and minimum points are swapped here.
 
-	lats = np.linspace(maximum_point[0], minimum_point[0], height)
-	lons = np.linspace(minimum_point[1], maximum_point[1], width)
+	lats = np.linspace(region.maximum_point[0], region.minimum_point[0], height)
+	lons = np.linspace(region.minimum_point[1], region.maximum_point[1], width)
 
 	grid_coords = []
 	grid_latlon = []
@@ -222,20 +188,20 @@ def create_grid(grid_points, minimum_point, maximum_point):
 
 # TODO: Disregard it when we're refining.
 
-def redistrict(desired_num_districts, district_indices, verbose=False,
-	print_claimants=False, max_seconds=None):
+def redistrict(desired_num_districts, district_indices, region=colorado,
+	verbose=False, print_claimants=False, max_seconds=None):
 
 	num_district_candidates = len(district_indices)
 
 	grid_latlon, grid_coords, long_axis_points = create_grid(
-		grid_points, minimum_point, maximum_point)
+		grid_points, region)
 
 	district_coords = []
 	district_latlon = []
 
 	for index in district_indices:
-		lat = block_data[index]["lat"]
-		lon = block_data[index]["long"]
+		lat = region.block_data[index]["lat"]
+		lon = region.block_data[index]["long"]
 		district_coords.append(LLHtoECEF_latlon(lat, lon, mean_radius))
 		district_latlon.append([lat, lon])
 
@@ -251,7 +217,9 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 
 	grid_populations = np.zeros(num_gridpoints, np.int64)
 
-	for cur_block in block_data:
+	# TODO: I probably shouldn't be reaching into an object like this.
+	# Fix later.
+	for cur_block in region.block_data:
 		center_idx = points_tree.query(cur_block["coords"])[1]
 		cur_block["center_idx"] = center_idx
 		grid_populations[cur_block["center_idx"]] += cur_block["population"]
@@ -372,7 +340,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	new_total_gridpoints = 150
 
 	new_grid_latlon, new_grid_coords, new_long_axis_points = create_grid(
-		new_total_gridpoints, minimum_point, maximum_point)
+		new_total_gridpoints, region)
 
 	# Find grid points that cover stale points.
 	old_grid_points_covered = points_tree.query(new_grid_coords)[1]
@@ -400,7 +368,9 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 	# Associate each census block with the claimant for the point
 	# it's closest to.
 
-	for cur_block in block_data:
+	# TODO: I probably shouldn't be reaching into an object like this either.
+	# Fix later!
+	for cur_block in region.block_data:
 		cur_block["claimant"] = claimants[cur_block["center_idx"]]
 		# Better is: get the polygon for the census block and check
 		# that every vertex is in a decided block. If it is, then the
@@ -417,8 +387,9 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 
 	pixels = 600**2 # e.g., total number of pixels used in output image.
 
-	aspect_ratio = get_aspect_ratio(minimum_point, maximum_point)
-	write_image(f"output_test_voronoi_pop_{chosen_districts[0]}_points{grid_points}.png", pixels, aspect_ratio, block_data)
+	aspect_ratio = region.get_aspect_ratio()
+	write_image(f"output_test_pop_{chosen_districts[0]}_points{grid_points}.png",
+		pixels, aspect_ratio, region)
 
 	return objective_value, chosen_districts, relative_stddev
 
@@ -434,7 +405,7 @@ def redistrict(desired_num_districts, district_indices, verbose=False,
 # point, even when these points may be irregularly placed, as might happen when
 # refining the map.
 
-def run(district_indices=None):
+def run(district_indices=None, region=colorado):
 
 	if district_indices is None:
 		specified_district = False
@@ -458,8 +429,8 @@ def run(district_indices=None):
 			max_seconds = None
 		else:
 			district_indices = census_block_kmpp(
-				block_data, num_districts_to_test)
-			max_seconds = 300
+				region.block_data, num_districts_to_test)
+			max_seconds = 900
 
 		district_indices = np.array(sorted(district_indices))
 		objective_value, district_indices, relative_stddev = redistrict(
@@ -487,6 +458,7 @@ district_indices = None
 # district_indices = [2067, 17262, 20419, 24657, 26253, 52238, 102279, 136267]
 # district_indices = [18937, 19979, 74671, 83626, 97369, 107272, 123089, 130918]
 # district_indices = [1100, 60990, 64540, 65189, 84319, 84798, 88665, 90398]
+# district_indices = [9316, 63572, 68116, 77836, 85977, 90872, 97054, 119145]
 
 # Good uncapacitated scores or relative std devs:
 # district_indices = [30054, 47476, 59892, 61154, 72719, 98886, 120521,134888] #(score)

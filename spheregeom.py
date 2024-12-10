@@ -2,6 +2,9 @@
 
 import numpy as np
 
+# mean distance from the center of the Earth, in kilometers.
+mean_radius = 6371
+
 # https://stackoverflow.com/a/20360045
 # Input coordinates are in radians.
 def LLHtoECEF_rad(r_lat, r_lon, alt):
@@ -21,7 +24,7 @@ def LLHtoECEF_rad(r_lat, r_lon, alt):
 
 	return (x, y, z)
 
-def LLHtoECEF_latlon(lat, lon, alt):
+def LLHtoECEF_latlon(lat, lon, alt=mean_radius):
 	return LLHtoECEF_rad(np.radians(lat), np.radians(lon), alt)
 
 # https://stackoverflow.com/a/29546836
