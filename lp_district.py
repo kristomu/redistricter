@@ -98,63 +98,10 @@ def print_claimant_array(claimants):
 				printout_string += str(cell)
 		print(printout_string)
 
-def write_image(filename, pixels, aspect_ratio, region):
-
-	height, width, error = grid_dimensions(pixels, aspect_ratio)
-
-	# See below for why max and min is swapped for latitudes.
-	img_lats = np.linspace(region.maximum_point[0], region.minimum_point[0], height)
-	img_lons = np.linspace(region.minimum_point[1], region.maximum_point[1], width)
-
-	# Create a kd tree containing the coordinates of each census block.
-	block_coords = [x["coords"] for x in region.block_data]
-	block_tree = cKDTree(block_coords)
-
-	# XXX: Could use a Delaunay triangulation of the census blocks to check each
-	# image point against the closest census block center's neighbors. Suppose that
-	# a very large block is next to a quite small one, and the point is just inside
-	# the large block. Then the small one's center might be closer even though the
-	# point properly speaking belongs to the large block.
-
-	# (We could also use Delaunay for resolution refinement. later.)
-
-	# XXX: Also do polygon checking to account for points that are outside the
-	# region (state) itself. (Or extract a polygon for the state and use polygon
-	# checking against it.)
-
-	# Creating an assignment array the way kmeans does is probably the better
-	# choice here. TODO later.
-
-	image_space_claimants = []
-
-	for img_lat in img_lats:
-		image_space_line = []
-		for img_long in img_lons:
-			img_coord = LLHtoECEF_latlon(img_lat, img_long, mean_radius)
-			block_idx = block_tree.query(img_coord)[1]
-			claimant = region.block_data[block_idx]["claimant"]
-			image_space_line.append(claimant)
-		image_space_claimants.append(image_space_line)
-
-	image_space_claimants = np.array(image_space_claimants)
-	claimed_num_districts = np.max(image_space_claimants)+1
-
-	# Create some random colors.
-	colors = np.random.randint(256, size = (claimed_num_districts, 3),
-		dtype=np.uint8)
-
-	# Color mixed claims grey.
-	colors = np.vstack([colors, [127, 127, 127]])
-	image_space_claimants[image_space_claimants==-1] = claimed_num_districts
-
-	# And save!
-	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
-	image.save(filename, "PNG")
-
 # Get coordinates and populations. Use Colorado for now.
 colorado = Region("tl_2023_08_tabblock20.dbf")
 
-grid_points = 100
+grid_points = 300
 
 # Creates a equirectangular grid of the desired granularity.
 # minimum_point is the minimum latitude and longitude of the bounding box
@@ -234,6 +181,7 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 	# kmeans.has_compactness_constraints = True
 	# kmeans.get_compactness_constraints = HCKM_exact_compactness
 
+	# 7. Solve it!
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
 		grid_populations, district_point_dist)
 
@@ -276,92 +224,15 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 	if not print_claimants:
 		return objective_value, chosen_districts, relative_stddev
 
-	# If we want to refine the result, we need to invalidate some points - points
-	# whose Voronoi cells might have finer detail that we don't know yet. There
-	# are two types:
-	#	- Points that are assigned to multiple districts (because it indicates
-	#		that the point is densely populated and we need higher resolution
-	#		to discern the details).
-	#	- Points that neighbor points assigned to other districts (because the
-	#		true, higher res border may be in the middle of a current resolution
-	#		cell).
+	# We want to figure out which cells have been assigned to which districts, as
+	# well as which cells are uncertain (assigned to multiple districts)
 
-	# To do this, we first need to figure out what the points' neighbors are.
-	# Let's use a Delaunay triangulation.
-
-	# Some further experimentation indicates that there may be numerical
-	# imprecision problems here. Let's see later if they pose a problem.
-
-	grid_neighbor_source = Delaunay(grid_latlon,
-		qhull_options="Qbb Qc Qz Q12 Qt")
-	indptr, indices = grid_neighbor_source.vertex_neighbor_vertices
-
-	grid_neighbors = [indices[indptr[i]:indptr[i+1]]
-		for i in range(num_gridpoints)]
-
-	# Next, we need to determine the grid points that are "stale", or
-	# invalidated. First we need a mapping from grid points to districts
-	# that hold them.
-
-	# Get the values: each row is a district, each cell values[d][p] corresponds to
-	# how much of grid area p's population has been allocated to that district.
-
-	# We want to figure out which cells have been assigned to which districts, as well
-	# as which cells are uncertain. The cells we can't be sure about are those that
-	# have fractional values, as well as all of their direct neighbors.
-
-	directly_certain = np.max(assign_values, axis=0) > (1 - 1e-5)
+	assigned_to_only_one = np.max(assign_values, axis=0) > (1 - 1e-5)
 
 	# Which district belongs to which point. Regions with multiple districts
 	# are set to -1.
 	claimants = np.argmax(assign_values, axis=0)
-	claimants[directly_certain == False] = -1
-
-	# Determine stale points.
-
-	stale_gridpoints = set()
-	for i in range(num_gridpoints):
-		# Points assigned to multiple districts.
-		if claimants[i] == -1:
-			stale_gridpoints.add(i)
-			continue
-		# Maybe some clever vectorization could be done here.
-		for neighbor in grid_neighbors[i]:
-			if claimants[neighbor] != claimants[i]:
-				stale_gridpoints.add(i)
-
-	# Next, create a higher res grid and determine which points are
-	# closest/on top of a stale grid point.
-	# TODO: Find a better way to do this. E.g. suppose a stale point
-	# is something like a city smack dab in the middle of a large
-	# set region, then the chance that our new grid gets on top of it
-	# is very small. Ultimately, I need to get away from grids entirely.
-
-	new_total_gridpoints = 150
-
-	new_grid_latlon, new_grid_coords, new_long_axis_points = create_grid(
-		new_total_gridpoints, region)
-
-	# Find grid points that cover stale points.
-	old_grid_points_covered = points_tree.query(new_grid_coords)[1]
-	covers_stale = [i for i in range(new_total_gridpoints) \
-		if old_grid_points_covered[i] in stale_gridpoints]
-	does_new_point_cover_stale = np.array([False] * new_total_gridpoints)
-	does_new_point_cover_stale[covers_stale] = True
-
-	# Next: make redistrict take does_new_point_cover_stale as input.
-	# Count the population for each district covering stale points and
-	# decided points. The former go into the solver as pop[point] as
-	# before; the latter is summed up to decided_pop[district] based
-	# on district the decided point is closest to.
-	# Then the HCKM solver population constraint should instead be
-	# (3) decided[district] +
-	#		for all i: (sum over p: assign[i, p] * pop[p]) <= tpop/n
-
-	# --All of that is TODO--
-
-
-
+	claimants[assigned_to_only_one == False] = -1
 
 	# Stuff related to outputting an image may be found below.
 
@@ -370,40 +241,21 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 
 	# TODO: I probably shouldn't be reaching into an object like this either.
 	# Fix later!
+	assignments = []
 	for cur_block in region.block_data:
 		cur_block["claimant"] = claimants[cur_block["center_idx"]]
-		# Better is: get the polygon for the census block and check
-		# that every vertex is in a decided block. If it is, then the
-		# census block is decided, otherwise it is at least partly
-		# stale. TODO?
-		if cur_block["center_idx"] in stale_gridpoints:
-			cur_block["certain_claimant"] = -1
-		else:
-			cur_block["certain_claimant"] = cur_block["claimant"]
+		assignments.append(claimants[cur_block["center_idx"]])
 
-	# See the function for why this 2D claimant array is upside down
 	two_dim_claimants = np.reshape(claimants, (-1, long_axis_points))
 	print_claimant_array(two_dim_claimants)
 
-	pixels = 600**2 # e.g., total number of pixels used in output image.
+	pixels = 600**2 # e.g.; total number of pixels used in output image.
 
-	aspect_ratio = region.get_aspect_ratio()
-	write_image(f"output_test_pop_{chosen_districts[0]}_points{grid_points}.png",
-		pixels, aspect_ratio, region)
+	region.write_image(
+		f"output_test_pop_{chosen_districts[0]}_points{grid_points}.png",
+		assignments, pixels)
 
 	return objective_value, chosen_districts, relative_stddev
-
-# Things that need to be done if we want to refine things:
-# - For each point, find the points whose Voronoi cells touch the point's.
-# - If the current point is fractionally assigned, set it and all its neighbors
-#		to unknown
-# - If the current point has a neighbor that belongs to another district, set
-#		both to unknown
-# - Otherwise, assign that point to the district (the assignment is definite).
-
-# The sticking point so far is how to robustly find every neighbor of a given
-# point, even when these points may be irregularly placed, as might happen when
-# refining the map.
 
 def run(district_indices=None, region=colorado):
 
@@ -451,19 +303,11 @@ district_indices = None
 # Specify a district here if you want to investigate one. Potential candidates
 # include:
 
-# Good HCKM scores:
-# district_indices = [1942, 4332, 29611, 37589, 39503, 102295, 119431, 136323]
-# district_indices = [5377, 25548, 29624, 45261, 52434, 73520, 90033, 112030]
-# district_indices = [23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743]
-# district_indices = [2067, 17262, 20419, 24657, 26253, 52238, 102279, 136267]
-# district_indices = [18937, 19979, 74671, 83626, 97369, 107272, 123089, 130918]
-# district_indices = [1100, 60990, 64540, 65189, 84319, 84798, 88665, 90398]
+# district_indices = [6264, 38224, 48101, 70818, 79460, 81361, 103741, 139140]
 # district_indices = [9316, 63572, 68116, 77836, 85977, 90872, 97054, 119145]
 
-# Good uncapacitated scores or relative std devs:
-# district_indices = [30054, 47476, 59892, 61154, 72719, 98886, 120521,134888] #(score)
-# district_indices = [26905, 28861, 65810, 71157, 88867, 104151,114789,138225] #stddev
-
-# district_indices = [1942, 4332, 29611, 37589, 39503, 102295, 119431, 136323]
+# district_indices = [15406, 16255, 23793, 82245, 86791, 90245, 108701, 115819]
+# district_indices = [10536, 43571, 59980, 77053, 83841, 94253, 97768, 107632]
+# district_indices = [1040, 20676, 70596, 85153, 85560, 99460, 105890, 118614]
 
 run(district_indices)
