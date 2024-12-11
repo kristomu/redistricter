@@ -15,6 +15,22 @@ from region import Region
 #	  Use Colorado for now.
 colorado = Region("tl_2023_08_tabblock20.dbf")
 
+# Given the pop_square_dists that contains the population-weighted distances
+# between district centers and census block centers, and proposed (additive)
+# district weights, returns the weighted squared distance matrix.
+def weight_populations(pop_square_dists, region_block_populations,
+	proposed_weights):
+
+	num_districts = len(proposed_weights)
+	proposed_weights_col = proposed_weights.reshape(num_districts, 1)
+
+	# The +1e-9 acts to break ties in order of distance for
+	# census blocks that nobody lives in.
+	weighted_square_dists = pop_square_dists + proposed_weights_col * \
+		(region_block_populations + 1e-9)
+
+	return weighted_square_dists
+
 def fit_kmeans_weights(district_indices, region):
 	num_districts = len(district_indices)
 
@@ -27,22 +43,30 @@ def fit_kmeans_weights(district_indices, region):
 	pop_square_dists = district_block_distances**2 * block_populations + \
 		district_block_distances**2 * 1e-9 # Break ties by distance.
 
-	alpha = 1
+	alpha = 0.0004
 	weights = np.array([1] * num_districts)
+	default_weights = True
 	record_dev = np.inf
 	record_weights = []
 
 	# This function makes it easy to use scipy optimization methods,
-	# but they tend only to be useful for very bad fits. See below.
+	# as an auxiliary step.
 
 	def check_population_dist(proposed_weights):
-		weighted_square_dists = (pop_square_dists.T * proposed_weights).T
+		weighted_square_dists = weight_populations(pop_square_dists,
+			block_populations, proposed_weights)
 		associated_districts = np.argmin(weighted_square_dists, axis=0)
 
 		district_pops = np.array([np.sum(block_populations[
 			associated_districts == x]) for x in range(num_districts)])
 
-		return np.std(district_pops)
+		return np.std(district_pops), district_pops
+
+	# Returns the gradient as well, for global optimization purposes
+	def check_population_dist_grad(weights):
+		error, district_pops = check_population_dist(weights)
+
+		return error, district_pops - region.total_population/num_districts
 
 	def print_new_minimum(x, f, accepted):
 		if accepted:
@@ -50,50 +74,61 @@ def fit_kmeans_weights(district_indices, region):
 		else:
 			print(f"at minimum {f:.4f}, rejected")
 
-	for j in range(10):
-		print(f"Pass {j}")
-		for i in range(150):
-			old_weights = np.copy(weights)
-			weighted_square_dists = (pop_square_dists.T * weights).T
-			associated_districts = np.argmin(weighted_square_dists, axis=0)
+	for i in range(10):
+		stalled = False
+		print(f"Iter: {i}/10, record: {record_dev}")
+		while not stalled:
+			record_dev_before = record_dev
 
-			district_pops = np.array([np.sum(block_populations[associated_districts == x])
-				for x in range(num_districts)])
-			std_dev = np.std(district_pops)
+			for j in range(400):
+				weighted_square_dists = weight_populations(pop_square_dists,
+					block_populations, weights)
+				associated_districts = np.argmin(weighted_square_dists, axis=0)
 
-			if std_dev < record_dev:
-				record_dev = std_dev
-				record_weights = np.copy(weights)
+				district_pops = np.array([np.sum(region.block_populations[
+					associated_districts == x]) for x in range(num_districts)])
 
-			# Update the weights based on current imbalances.
-			# There probably exist better update schedules, but this seems OK
-			# for now. Janáček and Gábrišová uses an additive update.
-			weights = (1-alpha) * weights + alpha * weights * district_pops/np.sum(district_pops)
-			if np.sum(weights) == 0:
-				weights = np.array([1] * num_districts)
+				# Roughly as in Janáček and Gábrišová, though I don't
+				# clamp to zero but just rescale so the minimum is zero,
+				# since adding a constant to all terms has no effect.
+				old_weights = np.copy(weights)
 
-			weights = weights / np.sum(weights)
+				# If this is directly after the unweighted k-means, use
+				# a weight vector proportional to the excess population.
+				if default_weights:
+					old_weights = np.zeros(num_districts)
+					default_weights = False
 
-		weights = np.copy(record_weights)
-		alpha = alpha * 0.9
+				new_weights = old_weights + alpha * \
+					(district_pops - region.total_population/num_districts)
+				new_weights -= np.min(new_weights)
 
-	# We could do something like this to try to find an optimum using scipy.
-	# This greatly improves bad fits (where std. devs are in the order of tens of
-	# thousands), but such fits are not very useful anyway, and the search would
-	# slow down the process for good fits, so I've left it disabled by default.
+				error, excess = check_population_dist(new_weights)
 
-	use_global_optimizer = False
+				if error < record_dev:
+					record_weights = new_weights
+					record_dev = error
+				weights = new_weights
 
-	if use_global_optimizer:
-		global_opt = basinhopping(check_population_dist, x0=record_weights,
-			minimizer_kwargs={"method": "Powell"}, niter_success=10,
-			callback=print_new_minimum)
+			stalled = record_dev == record_dev_before
+			if stalled:
+				print(f"\tinternal loop stall: record: {record_dev}")
+			else:
+				print(f"\tinternal loop: reduced to {record_dev}")
+
+		alpha *= 0.95
+		weights = record_weights
+
+		# Do a global optimization step for particularly difficult points.
+		global_opt = basinhopping(check_population_dist_grad, x0=weights,
+			minimizer_kwargs={"method": "L-BFGS-B", "jac": True}, niter_success=20)
 		if global_opt.fun < record_dev:
-			record_weights = global_opt.x/np.sum(global_opt.x)
+			weights = global_opt.x
 			record_dev = global_opt.fun
 
 	# Recalculate assignment from record.
-	weighted_square_dists = (pop_square_dists.T * record_weights).T
+	weighted_square_dists = weight_populations(pop_square_dists,
+			block_populations, record_weights)
 	record_association = np.argmin(weighted_square_dists, axis=0)
 
 	district_pops = np.array([np.sum(block_populations[
@@ -112,7 +147,7 @@ def fit_and_print(district_indices, region=colorado):
 	distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
 		district_indices, region)
 
-	region.write_image(f"kmeans_out_{district_indices[0]}.png", assignment, 1000**2)
+	region.write_image(f"kmeans_out_{district_indices[0]}_pop{pop_maxmin}.png", assignment, 1000**2)
 
 	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(district_indices)}")
 
@@ -127,53 +162,53 @@ def test():
 
 		# Good distances
 		[15242, 23733, 63447, 86133, 89922, 104716, 125226, 131351],
-		[12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428],
 		[19042, 23317, 47997, 62936, 69916, 84834, 107600, 125567],
-		[1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682],
 		[17751, 35038, 73583, 74619, 84595, 96107, 107911, 128978],
 
 		# Bad population distributions
-		[11167, 20347, 26270, 29544, 44035, 47757, 49177, 49708],
-		[3541, 20614, 30484, 32422, 32522, 32728, 45953, 46664],
-		[4826, 13270, 17271, 20414, 23771, 27710, 28701, 39536],
-		[7744, 13507, 20911, 75881, 115307, 116693, 125962, 132804],
+		[12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428],
+		[1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682],
 
 		# Bad distances
 		[90019, 111932, 122082, 125802, 128521, 131978, 133947, 135321],
+		[7744, 13507, 20911, 75881, 115307, 116693, 125962, 132804],
 		[23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743],
+		[11167, 20347, 26270, 29544, 44035, 47757, 49177, 49708],
+		[3541, 20614, 30484, 32422, 32522, 32728, 45953, 46664],
+		[4826, 13270, 17271, 20414, 23771, 27710, 28701, 39536],
 		[3690, 7847, 18287, 23701, 25693, 65679, 88895, 98680]
 	]
 
 	# Reference results.
 	reference_penalties = {
-			(3117, 126352): (16849.429, 1.0),
-			(24944, 57408, 71309): (29376.828, 6.94),
+			(3117, 126352): (12517.8735, 4.0),
+			(24944, 57408, 71309): (18303.3651, 14.70),
 			(19997, 23780, 88292, 91381, 117998, 123480, 124476, 130672):
-				(5080.133, 9.61),
+				(3936.3581, 20.4),
 			(15242, 23733, 63447, 86133, 89922, 104716, 125226, 131351):
-				(3903, 69),
-			(12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428):
-				(3968, 30),
+				(3490, 69),
 			(19042, 23317, 47997, 62936, 69916, 84834, 107600, 125567):
-				(3951.410, 54.78),
-			(1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682):
-				(4052.803, 49.78),
+				(3664, 379),
 			(17751, 35038, 73583, 74619, 84595, 96107, 107911, 128978):
-				(4079.641, 28.23),
-			(11167, 20347, 26270, 29544, 44035, 47757, 49177, 49708):
-				(20996.375, 317632.62),
-			(3541, 20614, 30484, 32422, 32522, 32728, 45953, 46664):
-				(41045.028, 310802.97),
-			(4826, 13270, 17271, 20414, 23771, 27710, 28701, 39536):
-				(31694.395, 284331.82),
-			(7744, 13507, 20911, 75881, 115307, 116693, 125962, 132804):
-				(37584.978, 275723.31),
+				(3734, 38),
+			(12415, 19038, 49962, 63421, 89508, 116924, 124294, 130428):
+				(3202, 16012),
+			(1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682):
+				(2721, 183596),
 			(90019, 111932, 122082, 125802, 128521, 131978, 133947, 135321):
-				(49930.074, 104790.34),
+				(36087, 26),
+			(7744, 13507, 20911, 75881, 115307, 116693, 125962, 132804):
+				(34680, 70),
 			(23255, 23766, 30428, 33463, 41185, 48967, 88287, 131743):
-				(40949.199, 88523.20),
+				(35981, 206),
+			(11167, 20347, 26270, 29544, 44035, 47757, 49177, 49708):
+				(19134, 97),
+			(3541, 20614, 30484, 32422, 32522, 32728, 45953, 46664):
+				(33510, 42),
+			(4826, 13270, 17271, 20414, 23771, 27710, 28701, 39536):
+				(27554, 45),
 			(3690, 7847, 18287, 23701, 25693, 65679, 88895, 98680):
-				(37696.509, 108042.33)}
+				(34315, 77)}
 
 	for proposed_centers in centers_of_interest:
 		distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
