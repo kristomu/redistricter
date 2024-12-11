@@ -106,11 +106,13 @@ def fit_kmeans_weights(district_indices, region):
 	pop_penalty = np.std(district_pops) # standard deviation
 	pop_maxmin = np.max(district_pops)-np.min(district_pops)
 
-	return distance_penalty, pop_penalty, pop_maxmin
+	return distance_penalty, pop_penalty, pop_maxmin, record_association
 
-def fit_and_print(district_indices):
-	distance_penalty, pop_penalty, pop_maxmin = fit_kmeans_weights(
-		district_indices, colorado)
+def fit_and_print(district_indices, region=colorado):
+	distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
+		district_indices, region)
+
+	region.write_image(f"kmeans_out_{district_indices[0]}.png", assignment, 1000**2)
 
 	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(district_indices)}")
 
@@ -174,7 +176,7 @@ def test():
 				(37696.509, 108042.33)}
 
 	for proposed_centers in centers_of_interest:
-		distance_penalty, pop_penalty, pop_maxmin = fit_kmeans_weights(
+		distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
 			proposed_centers, colorado)
 
 		print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(proposed_centers)}")
