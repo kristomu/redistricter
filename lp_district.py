@@ -178,8 +178,7 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 	# 6. Create the program/problem to solve.
 	
 	kmeans = HardCapacitatedKMeans()
-	# kmeans.has_compactness_constraints = True
-	# kmeans.get_compactness_constraints = HCKM_exact_compactness
+	# kmeans = HardCapacitatedKMeans(SwapCompactness()) # for compactness constraints
 
 	# 7. Solve it!
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,

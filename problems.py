@@ -26,137 +26,151 @@ what selection is best.
 
 '''
 
-# Auxiliary: compactness constraints for hard capacitated k-means. There are two
-# types: a relaxed constraint that doesn't need binary variables, and an exact
-# constraint that does.
+# Auxiliary: compactness constraints for hard capacitated k-means. These
+# enforce contiguity of the districts and may also enforce more limiting
+# notions of compactness.
 
-# To make the signatures match up, we use binary variables for both even though
-# the relaxed version doesn't need them. The MIP preprocessor should detect this
-# and do the right thing. TODO: add these to the object itself and use self.assign
-# and/or self.assign_binary as appropriate.
+class NoCompactness:
+	# Null object, implements nothing
+	def get_constraints(self):
+		return []
+	def has_constraints(self):
+		return False
 
 # From Janáček and Gábrišová, theorem 4.
 # https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
 
-def HCKM_exact_compactness(num_districts, num_gridpoints,
+# So named because it enforces the constraint that no pair of districts
+# can swap points belonging to each other and mutually benefit in terms
+# of distance.
+
+class SwapCompactness:
+	def has_constraints(self):
+		return True
+
+	def get_constraints(self, num_districts, num_gridpoints,
 		district_point_dist, assign_binary):
 
-	# Let v_ik(x) be the difference dist[k, x] - dist[i, x].
-	# Let v_ik be the minimum such value over every point x
-	# assigned to i.
+		# Let v_ik(x) be the difference dist[k, x] - dist[i, x].
+		# Let v_ik be the minimum such value over every point x
+		# assigned to i.
 
-	# Then districts are compact if -v_ik <= v_ki for all pairs
-	# of districts i and k.
+		# Then districts are compact if -v_ik <= v_ki for all pairs
+		# of districts i and k.
 
-	# We use a big M method for this:
+		# We use a big M method for this:
 
-	#	v_ik <= (1 - assign_binary[i, x]) * 2*M + dist[k, x] - dist[i, x].
+		#	v_ik <= (1 - assign_binary[i, x]) * 2*M + dist[k, x] - dist[i, x].
 
-	# I'll tweak this M later and perhaps introduce a way to get
-	# a more precise bound for it. It would seem clear that with this
-	# choice of M, the constraint can't make a difference if assign[i][p]
-	# is 0, since even in the worst case, 2*M - dist[k][p] - dist[i][p] >
-	# max p: dist[k][p] - dist[i][p]. But I'm not quite sure about my
-	# own reasoning.
+		# I'll tweak this M later and perhaps introduce a way to get
+		# a more precise bound for it. It would seem clear that with this
+		# choice of M, the constraint can't make a difference if assign[i][p]
+		# is 0, since even in the worst case, 2*M - dist[k][p] - dist[i][p] >
+		# max p: dist[k][p] - dist[i][p]. But I'm not quite sure about my
+		# own reasoning.
 
-	M = np.max(district_point_dist)
+		M = np.max(district_point_dist)
 
-	constraints = []
-	v = cp.Variable((num_districts, num_districts))
+		constraints = []
+		v = cp.Variable((num_districts, num_districts))
 
-	for i in range(num_districts):
-		print(i)
-		for k in range(num_districts):
-			if i == k:
-				continue
+		for i in range(num_districts):
+			print(i)
+			for k in range(num_districts):
+				if i == k:
+					continue
 
-			for p in range(num_gridpoints):
-				constraints.append(v[i][k] <= (1 - assign_binary[i][p]) * 2*M +
-					district_point_dist[k][p] - district_point_dist[i][p])
+				for p in range(num_gridpoints):
+					constraints.append(v[i][k] <= (1 - assign_binary[i][p]) * 2*M +
+						district_point_dist[k][p] - district_point_dist[i][p])
 
-			constraints.append(-v[i][k] <= v[k][i])
+				constraints.append(-v[i][k] <= v[k][i])
 
-	return constraints
+		return constraints
 
-def weighted_voronoi_constraint(num_districts, num_gridpoints,
+class VoronoiCompactness:
+	def has_constraints(self):
+		return True
+
+	def get_constraints(self, num_districts, num_gridpoints,
 		district_point_dist, assign_binary):
 
-	# This emulates a "Voronoi" constraint where each point closer to A
-	# than to B is barred from being assigned to B, but where each
-	# district also has a weight that determines its "force" on the
-	# points. This emulates the result of using an iterative method like
-	# the moments of inertia method by Hess et al., but finding the
-	# actual global optimum instead of a local one.
+		# This emulates a "Voronoi" constraint where each point closer to A
+		# than to B is barred from being assigned to B, but where each
+		# district also has a weight that determines its "force" on the
+		# points. This emulates the result of using an iterative method like
+		# the moments of inertia method by Hess et al., but finding the
+		# actual global optimum instead of a local one.
 
-	# https://pubsonline.informs.org/doi/abs/10.1287/opre.13.6.998
+		# https://pubsonline.informs.org/doi/abs/10.1287/opre.13.6.998
 
-	# Currently rather hacky.
+		# Currently rather hacky.
 
-	# It could also potentially be ported to center-less if I do that
-	# later: just use the implicit centroid distance. The difficult part
-	# would be to remove the dependency on g. I have ideas for how to do
-	# that when the district centers are known, but they're harder to do
-	# if the district centers are unknown.
+		# It could also potentially be ported to center-less if I do that
+		# later: just use the implicit centroid distance. The difficult part
+		# would be to remove the dependency on g. I have ideas for how to do
+		# that when the district centers are known, but they're harder to do
+		# if the district centers are unknown.
 
-	# Forcing all weights to be one would have a nice physical
-	# interpretation: "each district is assigned the points closer to it
-	# than to any other district". But it would almost certainly mean
-	# giving up on hard capacities.
+		# Forcing all weights to be one would have a nice physical
+		# interpretation: "each district is assigned the points closer to it
+		# than to any other district". But it would almost certainly mean
+		# giving up on hard capacities.
 
-	weight = cp.Variable(num_districts)
+		weight = cp.Variable(num_districts)
 
-	constraints = []
+		constraints = []
 
-	M = np.max(district_point_dist)**2
-	g = 112 # ??? for 500 pts, and even then it's not exact.
+		M = np.max(district_point_dist)**2
+		g = 112 # ??? for 500 pts, and even then it's not exact.
 
-	for i in range(num_districts):
-		for k in range(num_districts):
-			if i == k:
-				continue
+		for i in range(num_districts):
+			for k in range(num_districts):
+				if i == k:
+					continue
 
-			for p in range(num_gridpoints):
-				# If the point is associated to district i and we have infinite
-				# resolution, then we would want
-				# weight[i] * dist[i, p]**2 < weight[k] * dist[k, p]**2
-				# for all other districts k.
+				for p in range(num_gridpoints):
+					# If the point is associated to district i and we have infinite
+					# resolution, then we would want
+					# weight[i] * dist[i, p]**2 < weight[k] * dist[k, p]**2
+					# for all other districts k.
 
-				# Since we don't have infinite resolution, we must be generous to
-				# the other districts k and let them potentially fractionally claim
-				# the same grid square, by only asserting
+					# Since we don't have infinite resolution, we must be generous to
+					# the other districts k and let them potentially fractionally claim
+					# the same grid square, by only asserting
 
-				# weight[i] * dist[i, p]**2 < weight[k] * ( dist[k, p]**2 + g**2)
+					# weight[i] * dist[i, p]**2 < weight[k] * ( dist[k, p]**2 + g**2)
 
-				# for some fudge factor g of magnitude similar to the distance
-				# between two adjacent points. (I haven't yet figured out how to
-				# set this g.)
+					# for some fudge factor g of magnitude similar to the distance
+					# between two adjacent points. (I haven't yet figured out how to
+					# set this g.)
 
-				# A big M approach and relaxing the strict inequality gives
+					# A big M approach and relaxing the strict inequality gives
 
-				# weight[i] * dist[i, p]**2 <= weight[k] * ( dist[k, p]**2 + g**2) +
-				#	(1 - assign_binary[i, p]) * 2 * M.
+					# weight[i] * dist[i, p]**2 <= weight[k] * ( dist[k, p]**2 + g**2) +
+					#	(1 - assign_binary[i, p]) * 2 * M.
 
-				# Potentially this can be tightened up by involving assign[k, p]
-				# with g so that it's treated differently if k claims nearly all
-				# of the point and if it claims just a part of it. Ponder this later.
+					# Potentially this can be tightened up by involving assign[k, p]
+					# with g so that it's treated differently if k claims nearly all
+					# of the point and if it claims just a part of it. Ponder this later.
 
-				constraints.append(
-					weight[i] * district_point_dist[i][p]**2 <= \
-					weight[k] * (district_point_dist[k][p]**2 + g**2) + \
-					(1 - assign_binary[i][p]) * 2 * M)
+					constraints.append(
+						weight[i] * district_point_dist[i][p]**2 <= \
+						weight[k] * (district_point_dist[k][p]**2 + g**2) + \
+						(1 - assign_binary[i][p]) * 2 * M)
 
-				''' The old one was:
-				constraints.append(
-					(1 - assign_binary[i][p]) * 2*M + \
-					weight[k] * district_point_dist[k][p]**2 - \
-					weight[i] * (district_point_dist[k][p] - f)**2 >= 0)
-				'''
+					''' The old one was:
+					constraints.append(
+						(1 - assign_binary[i][p]) * 2*M + \
+						weight[k] * district_point_dist[k][p]**2 - \
+						weight[i] * (district_point_dist[k][p] - f)**2 >= 0)
+					'''
 
-		constraints.append(weight[i] >= 0)
+			constraints.append(weight[i] >= 0)
 
-	constraints.append(cp.sum(weight) == 1)
+		constraints.append(cp.sum(weight) == 1)
 
-	return constraints
+		return constraints
 
 # NOTE about HCKM: Using a very large number of candidate districts and
 # a small number of desired districts leads SCIP to almost immediately
@@ -170,12 +184,11 @@ def weighted_voronoi_constraint(num_districts, num_gridpoints,
 # problem".
 
 class HardCapacitatedKMeans:
-	def __init__(self):
+	def __init__(self, compactness_constraint=NoCompactness()):
 		self._name = "Hard capacitated k-means"
 		self.assign = None
 		self.objective_scaling_divisor = 1
-		self.has_compactness_constraints = False
-		self.get_compactness_constraints = None
+		self.compactness_constraint = compactness_constraint
 
 	@property
 	def name(self):
@@ -264,7 +277,7 @@ class HardCapacitatedKMeans:
 
 		# TODO: Find a more principled way of determining the big M constant
 		# so that any in-practice nonzero assign value is allowed.
-		if self.has_compactness_constraints:
+		if self.compactness_constraint.has_constraints():
 			constraints.append(self.assign_binary >= self.assign)
 			constraints.append(self.assign_binary <= self.assign * 10000) # HACK!
 		else:
@@ -293,9 +306,10 @@ class HardCapacitatedKMeans:
 
 		constraints += pop_constraints + assign_constraints
 
-		if self.has_compactness_constraints:
-			constraints += self.get_compactness_constraints(num_districts,
-				num_gridpoints, district_point_dist, self.assign_binary)
+		if self.compactness_constraint.has_constraints():
+			constraints += self.compactness_constraint.get_constraints(
+				num_districts, num_gridpoints, district_point_dist,
+				self.assign_binary)
 
 		# (5): Enforce that the desired number of districts is chosen.
 
