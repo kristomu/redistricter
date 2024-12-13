@@ -88,89 +88,140 @@ class SwapCompactness:
 
 		return constraints
 
+# This emulates a "Voronoi" constraint where each point closer to A than
+# to B is barred from being assigned to B, but where each district also
+# has a weight that determines its "distance offset" on the points. This
+# should emulate the result of using an iterative method like the moments
+# of inertia method by Hess et al., but finding the actual global optimum
+# instead of a local one.
+
+# https://pubsonline.informs.org/doi/abs/10.1287/opre.13.6.998
+
+# Currently rather hacky.
+
+# It could also potentially be ported to center-less if I do that
+# later, but I'm not sure. Let's do one thing at a time.
+
+# Forcing all weights to be zero (or equal) would have a nice physical
+# interpretation: "each district is assigned the points closer to it
+# than to any other district". But it would almost certainly mean
+# giving up on hard capacities.
+
+# The constraints work like this:
+# If a point p is associated to district i and we have infinite resolution,
+# then we would want
+# 	(weight[i] + dist[i, p]**2) * pop[p] < (weight[k] + dist[k, p]**2) * pop[p]
+
+# However, as we're (likely) using a lower resolution problem, it's possible
+# that the bisector (boundary) between i and k cut through the same grid
+# square, which would then make the constraint impossible to satisfy. So
+# we probably need a relaxation, and I'll try this one:
+
+# If p and q are two points and
+#	d(i, p)^2 * pop[p] < d(i, q)^2 * pop[q],
+#	d(k, q)^2 * pop[q] < d(k, p)^2 * pop[p],
+# and q is claimed by i, then p cannot be claimed by k, so
+#	(weight[i] + dist[i, q]**2) * pop[q] < (weight[k] + dist[k, p]**2) * pop[p]
+# or in big M terms:
+#	(weight[i] + dist[i, q]**2) * pop[q] <= 
+#		(weight[k] + dist[k, p]**2) * pop[p] + (1 - assign_binary[i, q]) * M.
+
+# WLOG we can make p and q neighboring points. To do this efficiently we're
+# going to need some kind of Delaunay triangulation or to pass additional
+# information through about who the neighbors of a point is. I'm not going
+# to do that yet.
+
+# There may be better ways, e.g. using adjacent census blocks allocated
+# to the same grid square...
+
+# And still it outright fails on some cases, e.g.
+# [1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682]
+# with 250 gridpoints. TODO: Find out what's going on. And find out why
+# the weights are nonsensical (e.g. try to force weights from kmeans.py
+# on a case that *does* work, and see if they work or if we get something
+# infeasible...)
+
+# When it does work, it seems to enforce the compactness well enough,
+# but the weights aren't right.
+
+from spheregeom import *
+
 class VoronoiCompactness:
+	def __init__(self, grid_latlon, district_latlon, grid_populations):
+		# Find (i, j, p, q) combinations that can be used to establish
+		# the constraint above.
+		# Try to do this without Delaunay triangulations first because
+		# the numerical precision is not the best. See if it works
+		# without introducing additional bugs.
+
+		num_districts = len(district_latlon)
+		num_gridpoints = len(grid_latlon)
+
+		self.admissible_points = []
+		self.grid_populations = grid_populations
+
+		for i in tqdm(range(num_districts)):
+			for k in range(num_districts):
+				if i == k: continue
+
+				for p in range(num_gridpoints):
+					i_dist_p = haversine_np(
+						district_latlon[i][0], district_latlon[i][1],
+						grid_latlon[p][0], grid_latlon[p][1])
+					k_dist_p = haversine_np(
+						district_latlon[k][0], district_latlon[k][1],
+						grid_latlon[p][0], grid_latlon[p][1])
+					# Pick the point where i_dist_q and k_dist_p are
+					# as close as possible.
+					record_distance = np.inf
+					record_idx = (-1, -1)
+
+					for q in range(num_gridpoints):
+						if p == q: continue
+
+						i_dist_q = haversine_np(
+							district_latlon[i][0], district_latlon[i][1],
+							grid_latlon[q][0], grid_latlon[q][1])
+						k_dist_q = haversine_np(
+							district_latlon[k][0], district_latlon[k][1],
+							grid_latlon[q][0], grid_latlon[q][1])
+
+						if i_dist_p >= i_dist_q: continue
+						if k_dist_q >= k_dist_p: continue
+						if np.fabs(i_dist_q - k_dist_p) >= record_distance: continue
+
+						record_distance = np.fabs(i_dist_q - k_dist_p)
+						record_idx = (p, q)
+
+					if record_idx == (-1, -1):
+						continue
+
+					self.admissible_points.append((i, k, record_idx[0],
+						record_idx[1]))
+
 	def has_constraints(self):
 		return True
 
 	def get_constraints(self, num_districts, num_gridpoints,
 		district_point_dist, assign_binary):
 
-		# This emulates a "Voronoi" constraint where each point closer to A
-		# than to B is barred from being assigned to B, but where each
-		# district also has a weight that determines its "force" on the
-		# points. This emulates the result of using an iterative method like
-		# the moments of inertia method by Hess et al., but finding the
-		# actual global optimum instead of a local one.
-
-		# https://pubsonline.informs.org/doi/abs/10.1287/opre.13.6.998
-
-		# Currently rather hacky.
-
-		# It could also potentially be ported to center-less if I do that
-		# later: just use the implicit centroid distance. The difficult part
-		# would be to remove the dependency on g. I have ideas for how to do
-		# that when the district centers are known, but they're harder to do
-		# if the district centers are unknown.
-
-		# Forcing all weights to be one would have a nice physical
-		# interpretation: "each district is assigned the points closer to it
-		# than to any other district". But it would almost certainly mean
-		# giving up on hard capacities.
-
-		weight = cp.Variable(num_districts)
+		self.weight = cp.Variable(num_districts)
 
 		constraints = []
 
-		M = np.max(district_point_dist)**2
-		g = 112 # ??? for 500 pts, and even then it's not exact.
+		M = np.sum(self.grid_populations) * np.max(district_point_dist)**2
 
-		for i in range(num_districts):
-			for k in range(num_districts):
-				if i == k:
-					continue
+		for i, k, p, q in self.admissible_points:
+			constraints.append((self.grid_populations[q] + 1e-9) * (self.weight[i] + district_point_dist[i][q]**2) <= \
+				(self.grid_populations[p] + 1e-9) * (self.weight[k] + district_point_dist[k][p]**2) + \
+				(1 - assign_binary[i, q]) * M)
 
-				for p in range(num_gridpoints):
-					# If the point is associated to district i and we have infinite
-					# resolution, then we would want
-					# weight[i] * dist[i, p]**2 < weight[k] * dist[k, p]**2
-					# for all other districts k.
-
-					# Since we don't have infinite resolution, we must be generous to
-					# the other districts k and let them potentially fractionally claim
-					# the same grid square, by only asserting
-
-					# weight[i] * dist[i, p]**2 < weight[k] * ( dist[k, p]**2 + g**2)
-
-					# for some fudge factor g of magnitude similar to the distance
-					# between two adjacent points. (I haven't yet figured out how to
-					# set this g.)
-
-					# A big M approach and relaxing the strict inequality gives
-
-					# weight[i] * dist[i, p]**2 <= weight[k] * ( dist[k, p]**2 + g**2) +
-					#	(1 - assign_binary[i, p]) * 2 * M.
-
-					# Potentially this can be tightened up by involving assign[k, p]
-					# with g so that it's treated differently if k claims nearly all
-					# of the point and if it claims just a part of it. Ponder this later.
-
-					constraints.append(
-						weight[i] * district_point_dist[i][p]**2 <= \
-						weight[k] * (district_point_dist[k][p]**2 + g**2) + \
-						(1 - assign_binary[i][p]) * 2 * M)
-
-					''' The old one was:
-					constraints.append(
-						(1 - assign_binary[i][p]) * 2*M + \
-						weight[k] * district_point_dist[k][p]**2 - \
-						weight[i] * (district_point_dist[k][p] - f)**2 >= 0)
-					'''
-
-			constraints.append(weight[i] >= 0)
-
-		constraints.append(cp.sum(weight) == 1)
+		constraints.append(self.weight >= 0)
 
 		return constraints
+
+	def report(self):
+		print([w.value for w in self.weight])
 
 # NOTE about HCKM: Using a very large number of candidate districts and
 # a small number of desired districts leads SCIP to almost immediately
