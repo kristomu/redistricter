@@ -176,9 +176,14 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 		district_latlon, grid_latlon)
 
 	# 6. Create the program/problem to solve.
+
+	# v_constraint = NeighborVoronoiCompactness(grid_latlon, district_latlon,
+	#	grid_populations)
+	# v_constraint = SwapCompactness()
+	v_constraint = SlackVoronoiCompactness()
 	
-	kmeans = HardCapacitatedKMeans()
-	# kmeans = HardCapacitatedKMeans(SwapCompactness()) # for compactness constraints
+	# kmeans = HardCapacitatedKMeans()
+	kmeans = HardCapacitatedKMeans(v_constraint)
 
 	# 7. Solve it!
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
@@ -205,6 +210,9 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 		canon_backend=cp.SCIPY_CANON_BACKEND, solver=solver_type,
 		scip_params=scip_params)
 	objective_value = prob.value / kmeans.objective_scaling_divisor
+
+	print("Auxiliary constraint information:")
+	v_constraint.report()
 
 	# Get a boolean array showing which districts were chosen.
 	district_choices = np.array([int(kmeans.active[x].value) == 1
@@ -301,6 +309,13 @@ district_indices = None
 
 # Specify a district here if you want to investigate one. Potential candidates
 # include:
+
+# This one breaks NeighborVoronoiCompactness.
+# district_indices = [1029, 27443, 38794, 57516, 76354, 80712, 98249, 127682]
+
+# This one has a good kmeans.py solution, allowing comparisons with
+# SlackVoronoiCompactness even for map sizes < 1000 grid points
+#district_indices = [24764, 54596, 77378, 77774, 79014, 83657, 85029, 91344]
 
 # district_indices = [6264, 38224, 48101, 70818, 79460, 81361, 103741, 139140]
 # district_indices = [9316, 63572, 68116, 77836, 85977, 90872, 97054, 119145]

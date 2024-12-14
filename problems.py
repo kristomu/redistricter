@@ -36,6 +36,8 @@ class NoCompactness:
 		return []
 	def has_constraints(self):
 		return False
+	def report(self):
+		return None
 
 # From Janáček and Gábrišová, theorem 4.
 # https://www.tandfonline.com/doi/pdf/10.3846/1648-4142.2009.24.274-282
@@ -87,6 +89,9 @@ class SwapCompactness:
 				constraints.append(-v[i][k] <= v[k][i])
 
 		return constraints
+
+	def report(self):
+		return None
 
 # This emulates a "Voronoi" constraint where each point closer to A than
 # to B is barred from being assigned to B, but where each district also
@@ -146,7 +151,7 @@ class SwapCompactness:
 
 from spheregeom import *
 
-class VoronoiCompactness:
+class NeighborVoronoiCompactness:
 	def __init__(self, grid_latlon, district_latlon, grid_populations):
 		# Find (i, j, p, q) combinations that can be used to establish
 		# the constraint above.
@@ -214,7 +219,72 @@ class VoronoiCompactness:
 		for i, k, p, q in self.admissible_points:
 			constraints.append((self.grid_populations[q] + 1e-9) * (self.weight[i] + district_point_dist[i][q]**2) <= \
 				(self.grid_populations[p] + 1e-9) * (self.weight[k] + district_point_dist[k][p]**2) + \
-				(1 - assign_binary[i, q]) * M)
+				(1 - assign_binary[i][q]) * M)
+
+		constraints.append(self.weight >= 0)
+
+		return constraints
+
+	def report(self):
+		print([w.value for w in self.weight])
+
+# One-coordinate Voronoi compactness, using a "slack factor" g,
+# which simulates neighbors, to get
+#	weight(A) - weight(X) - g < d(p, center_X)^2 - d(p, center_A)^2
+
+# The problem is that we need to set g. I think I have an idea about
+# how to get rid of the g, but it'll need more experimentation. Basically:
+# suppose that we have two points at 0 and 1, and A claims the point at 0
+# while B claims the one at 1. Then at least half of the line segment closer to 0
+# must belong to A, while at least half of the segment closer to 1 must belong
+# to B, so for two adjacent points p and q where p is claimed by A:
+#	weight(A) + d(A, midpoint p_mid between p's closest and most distant
+#						Voronoi point from A)**2 <=
+#	weight(B) + d(B, midpoint q_mid between q's closest and most distant
+#						Voronoi point from B)**2
+# and then something like approximating the latter with triangle inequality
+# and the Voronoi bisector being exactly in the middle between the adjacent
+# points,
+#	weight(B) + d(B, p's closest Voronoi point r from B) - d(p_mid, r)
+# or something in that vein? Later.
+
+# I may be overthinking this, because the *actual* uncapacitated objective
+# function is
+# sum over points p: min district X: pop(p) * (weight[X] + d(X, p)**2).
+# And from that perspective, when something is claimed by A instead of B,
+# even when it's quantized (low res), that means (weight[A] + d(A, p)**2) <
+# (weight[B] + d(B, p)**2)! So g = 0 should work, if that doesn't make it
+# infeasible, which could happen if the implied weight constraint on one
+# point is too harsh for another point. In which case we can do
+# (weight[A] + d(A, p's closest to A)**2) < (weight[B] + 
+# d(B, p's most distant to B)**2),
+# because A can't (uncapacitated) claim p unless at least some of its
+# indifference curve pokes into p's Voronoi region.
+
+# Indeed, needs more experimentation.
+
+class SlackVoronoiCompactness:
+	def has_constraints(self):
+		return True
+
+	def get_constraints(self, num_districts, num_gridpoints,
+		district_point_dist, assign_binary):
+
+		self.weight = cp.Variable(num_districts)
+
+		constraints = []
+
+		M = np.max(district_point_dist)**2
+		g = 1	# works for >= 1000 points
+
+		for i in range(num_districts):
+			for k in range(num_districts):
+				if i == k: continue
+				for p in range(num_gridpoints):
+					# If claimed by A, then for any other district X,
+					# weight(A) - weight(X) < d(p, center_X)^2 - d(p, center_A)^2
+
+					constraints.append(self.weight[i] - self.weight[k] - g <= district_point_dist[k][p]**2 - district_point_dist[i][p]**2 + (1 - assign_binary[i][p]) * M)
 
 		constraints.append(self.weight >= 0)
 
