@@ -232,36 +232,35 @@ class NeighborVoronoiCompactness:
 # which simulates neighbors, to get
 #	weight(A) - weight(X) - g < d(p, center_X)^2 - d(p, center_A)^2
 
-# The problem is that we need to set g. I think I have an idea about
-# how to get rid of the g, but it'll need more experimentation. Basically:
-# suppose that we have two points at 0 and 1, and A claims the point at 0
-# while B claims the one at 1. Then at least half of the line segment closer to 0
-# must belong to A, while at least half of the segment closer to 1 must belong
-# to B, so for two adjacent points p and q where p is claimed by A:
-#	weight(A) + d(A, midpoint p_mid between p's closest and most distant
-#						Voronoi point from A)**2 <=
-#	weight(B) + d(B, midpoint q_mid between q's closest and most distant
-#						Voronoi point from B)**2
-# and then something like approximating the latter with triangle inequality
-# and the Voronoi bisector being exactly in the middle between the adjacent
-# points,
-#	weight(B) + d(B, p's closest Voronoi point r from B) - d(p_mid, r)
-# or something in that vein? Later.
+# If only one district claims a point, then the unoffsetted
+# weight[A] + d(A, p)**2 < weight[B] + d(B, p)**2 can be used, no problem
+# (because it works in the fully disaggregated case and aggregated data
+# looks just like disaggregated data). However, the weights may be distorted
+# somewhat as a result. So the problem arises when there's a fractional claim.
 
-# I may be overthinking this, because the *actual* uncapacitated objective
-# function is
-# sum over points p: min district X: pop(p) * (weight[X] + d(X, p)**2).
-# And from that perspective, when something is claimed by A instead of B,
-# even when it's quantized (low res), that means (weight[A] + d(A, p)**2) <
-# (weight[B] + d(B, p)**2)! So g = 0 should work, if that doesn't make it
-# infeasible, which could happen if the implied weight constraint on one
-# point is too harsh for another point. In which case we can do
-# (weight[A] + d(A, p's closest to A)**2) < (weight[B] + 
-# d(B, p's most distant to B)**2),
-# because A can't (uncapacitated) claim p unless at least some of its
-# indifference curve pokes into p's Voronoi region.
+# Other potential speedups that hold for exclusive assignments but not
+# fractional ones include
 
-# Indeed, needs more experimentation.
+# -dist(i,k)^2 <= weight(i) - weight(k) <= dist(i, k)^2
+#	because due to the capacity constraints, every district must contain
+#	at least one point, hence for a district I we have
+#		weight(i) + d(i, i)^2 < weight(k) + d(k, i)^2
+#	=>	weight(i) < weight(k) + d(k, i)^2
+#	=>	weight(i) - weight(i) < d(k, i)^2
+
+# and if p is on the far side of i as seen from k, then
+#	assign[k][p] <= assign[i][p]
+# since otherwise, due to compactness, k would have to claim the
+# whole region between k to p, which would include i, hence be
+# contradiction that every district must contain at least one point.
+
+# "Far side" can be formalized as
+#	d(k, p) > d(i, p) and				closer to i than k
+#	d(k, i) < d(k, p)					not in the middle (between i and k)
+
+# Ideally, we could use the first observation to create a tighter big M
+# constant, and the second to get rid of some unnecessary binary constraints.
+# But unfortunately they don't work when fractional assignments are involved.
 
 class SlackVoronoiCompactness:
 	def has_constraints(self):
