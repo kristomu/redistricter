@@ -42,9 +42,12 @@ class Region:
 			[block["population"] for block in self.block_data])
 		self.total_population = np.sum(self.block_populations)
 
-	def get_district_block_distances(self, district_indices):
-		block_latlongs = np.array(
+	def get_block_latlongs(self):
+		return np.array(
 			[[block["lat"], block["long"]] for block in self.block_data])
+
+	def get_district_block_distances(self, district_indices):
+		block_latlongs = self.get_block_latlongs()
 
 		district_latlongs = [block_latlongs[i] for i in district_indices]
 

@@ -232,14 +232,14 @@ class NeighborVoronoiCompactness:
 # which simulates neighbors, to get
 #	weight(A) - weight(X) - g < d(p, center_X)^2 - d(p, center_A)^2
 
-# If only one district claims a point, then the unoffsetted
+# If only one district claims a point, then the unoffsetted (g=0)
 # weight[A] + d(A, p)**2 < weight[B] + d(B, p)**2 can be used, no problem
 # (because it works in the fully disaggregated case and aggregated data
 # looks just like disaggregated data). However, the weights may be distorted
 # somewhat as a result. So the problem arises when there's a fractional claim.
 
 # Other potential speedups that hold for exclusive assignments but not
-# fractional ones include
+# fractional ones (as long as both i and k are active) include
 
 # -dist(i,k)^2 <= weight(i) - weight(k) <= dist(i, k)^2
 #	because due to the capacity constraints, every district must contain
@@ -263,6 +263,9 @@ class NeighborVoronoiCompactness:
 # But unfortunately they don't work when fractional assignments are involved.
 
 class SlackVoronoiCompactness:
+	def __init__(self):
+		self.weight = None
+
 	def has_constraints(self):
 		return True
 
@@ -290,6 +293,10 @@ class SlackVoronoiCompactness:
 		return constraints
 
 	def report(self):
+		if self.weight is None:
+			print("Weights not defined!")
+			return
+
 		print([w.value for w in self.weight])
 
 # NOTE about HCKM: Using a very large number of candidate districts and
@@ -379,8 +386,6 @@ class HardCapacitatedKMeans:
 		# (1): Define the objective function
 		squared_distances_to_center = 0
 
-		# Unlike uncapacitated, the objective function should not
-		# multiply by the block population. (I think?)
 		for district_idx in range(num_districts):
 			squared_distances_to_center += (sq_district_point_dist[district_idx] * adj_block_populations) @ self.assign[district_idx]
 
