@@ -100,8 +100,8 @@ def haversine_centers(centers_latlon, other_points):
 #	using actual distances gives 3533.7747 (0.6% too high)
 #	using optimistic distances, gives 3233.4548 (8% too low).
 # with 500 points:
-#	using actual distances gives 3626.7935 (3.3% too high)
-#	using optimistic distances gives 2751.3964 (22% too low)
+#	using actual distances gives 3629.2565 (3.4% too high)
+#	using optimistic distances gives 2753.5338 (22% too low)
 
 def get_optimistic_distances(district_latlon, grid_latlon, region):
 	num_districts = len(district_latlon)

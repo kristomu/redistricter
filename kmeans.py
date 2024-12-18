@@ -1,7 +1,6 @@
 from scipy.optimize import minimize_scalar, minimize, basinhopping
 import numpy as np
 
-from parse_dbf import get_state_names, get_census_block_data
 from spheregeom import *
 
 from region import Region
@@ -13,7 +12,7 @@ from region import Region
 
 # 1. Get coordinates and populations
 #	  Use Colorado for now.
-colorado = Region("tl_2023_08_tabblock20.dbf")
+colorado = Region("tl_2023_08_tabblock20.zip")
 
 # Given the pop_square_dists that contains the population-weighted distances
 # between district centers and census block centers, and proposed (additive)

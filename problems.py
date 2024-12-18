@@ -279,7 +279,7 @@ class SlackVoronoiCompactness:
 		M = np.max(district_point_dist)**2
 		g = 1	# works for >= 1000 points
 
-		for i in range(num_districts):
+		for i in tqdm(range(num_districts)):
 			for k in range(num_districts):
 				if i == k: continue
 				for p in range(num_gridpoints):

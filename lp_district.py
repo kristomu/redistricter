@@ -99,7 +99,7 @@ def print_claimant_array(claimants):
 		print(printout_string)
 
 # Get coordinates and populations. Use Colorado for now.
-colorado = Region("tl_2023_08_tabblock20.dbf")
+colorado = Region("tl_2023_08_tabblock20.zip")
 
 grid_points = 300
 
@@ -174,6 +174,9 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 	# 5. Create pairwise distances between centers and points.
 	district_point_dist = haversine_centers(
 		district_latlon, grid_latlon)
+	# Alternatively:
+	# optimistic_distances = get_optimistic_distances(
+	#	district_latlon, grid_latlon)
 
 	# 6. Create the program/problem to solve.
 
@@ -182,8 +185,8 @@ def redistrict(desired_num_districts, district_indices, region=colorado,
 	# v_constraint = SwapCompactness()
 	v_constraint = SlackVoronoiCompactness()
 	
-	# kmeans = HardCapacitatedKMeans()
-	kmeans = HardCapacitatedKMeans(v_constraint)
+	kmeans = HardCapacitatedKMeans()
+	# kmeans = HardCapacitatedKMeans(v_constraint)
 
 	# 7. Solve it!
 	prob = kmeans.create_problem(desired_num_districts, num_gridpoints,
