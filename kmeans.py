@@ -11,8 +11,8 @@ from region import Region
 # them even closer to equal later.
 
 # 1. Get coordinates and populations
-#	  Use Colorado for now.
-colorado = Region("tl_2023_08_tabblock20.zip")
+#	  Use Colorado for now, and enable boundary trees.
+colorado = Region("tl_2023_08_tabblock20.zip", True)
 
 # Given the pop_square_dists that contains the population-weighted distances
 # between district centers and census block centers, and proposed (additive)

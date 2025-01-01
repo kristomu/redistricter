@@ -12,10 +12,16 @@ from spheregeom import *
 
 from PIL import Image
 from itertools import permutations
+from collections import defaultdict
 from tqdm import tqdm
 
 class Region:
-	def __init__(self, source_shapefile):
+
+	# create_boundary_tree decides whether we create a nearest neighbor
+	# tree for the census block polygons' vertices. This is very slow
+	# but significantly helps avoid unmapped points problems when writing
+	# output images.
+	def __init__(self, source_shapefile, create_boundary_tree=False):
 		self.state_names = state_names = get_state_names()
 		self.block_data = get_census_block_data(source_shapefile,
 			self.state_names)
@@ -45,6 +51,33 @@ class Region:
 
 		block_coords = [x["coords"] for x in self.block_data]
 		self.block_tree = cKDTree(block_coords)
+
+		# Get boundary coordinates and make a tree for them; hopefully
+		# this should improve nearest neighbor searches.
+
+		if not create_boundary_tree:
+			self.has_boundary_tree = False
+			return
+
+		boundary_map = defaultdict(list)
+
+		for block_idx in range(len(self.block_data)):
+			for boundary_vertices in self.block_data[block_idx]["boundaries"]:
+				for vertex in boundary_vertices:
+					boundary_map[tuple(vertex)].append(block_idx)
+
+		boundary_coords = [LLHtoECEF_latlon(*coords)
+			for coords in boundary_map.keys()]
+
+		self.has_boundary_tree = True
+
+		# A somewhat hacky way of normalizing things. The boundary tree
+		# gives an index (point number) of the closest neighbor. This
+		# index k, when looked up in boundary_coord_regions, gives the
+		# regions that have the kth point as one of its region vertices.
+		self.boundary_coord_regions = list(boundary_map.values())
+		self.boundary_tree = cKDTree(boundary_coords)
+		self.has_boundary_tree = True
 
 	def get_block_latlongs(self):
 		return np.array(
@@ -84,12 +117,31 @@ class Region:
 	# Raises a key error if there is none. Points on the exact boundary
 	# will return the district whose center is closest to the given point
 	# by Euclidean distance.
-	def find_enclosing_block(self, lat, lon):
+	def find_enclosing_block(self, lat, lon, exhaustive=False):
 		query_point_coord = LLHtoECEF_latlon(lat, lon, mean_radius)
+
+		if self.has_boundary_tree:
+			boundary_neighbor = self.boundary_tree.query(query_point_coord)[1]
+			for neighbor_idx in self.boundary_coord_regions[boundary_neighbor]:
+				if self.is_in_block(lat, lon, neighbor_idx):
+					return neighbor_idx
+
+			# This sometimes fails; I think I know why, and it'll need a
+			# better structure. Do that later. For now, just pass through
+			# to ordinary nearest neighbors if we fail.
 
 		for neighbor_idx in self.block_tree.query(query_point_coord, k=10)[1]:
 			if self.is_in_block(lat, lon, neighbor_idx):
 				return neighbor_idx
+
+		for neighbor_idx in self.block_tree.query(query_point_coord, k=40)[1]:
+			if self.is_in_block(lat, lon, neighbor_idx):
+				return neighbor_idx
+
+		if exhaustive:
+			for neighbor_idx in range(len(self.block_data)):
+				if self.is_in_block(lat, lon, neighbor_idx):
+					return neighbor_idx
 
 		raise KeyError("Could not find a census block for this point.")
 
@@ -133,14 +185,8 @@ class Region:
 					block_idx = self.find_enclosing_block(img_lat, img_long)
 					claimant = assignment[block_idx]
 				except KeyError:
-					# The point doesn't map to a census block.
-					# This shouldn't happen, but currently it does, so
-					# let's just paper over it.
-					# TODO: Find out why.
-					img_coord = LLHtoECEF_latlon(img_lat, img_long, mean_radius)
-					block_idx = self.block_tree.query(img_coord)[1]
-					claimant = assignment[block_idx]
-					
+					claimant = -1
+
 				image_space_line.append(claimant)
 			image_space_claimants.append(image_space_line)
 
@@ -162,7 +208,7 @@ class Region:
 
 			suitable = diffs > 8
 
-		print("OK")
+		print("Found colors.")
 
 		# Color mixed claims grey.
 		colors = np.vstack([colors, [127, 127, 127]])
