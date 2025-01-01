@@ -11,6 +11,7 @@ from quant_tools import grid_dimensions
 from spheregeom import *
 
 from PIL import Image
+from skimage.color import rgb2lab, deltaE_ciede2000
 from itertools import permutations
 from collections import defaultdict
 from tqdm import tqdm
@@ -145,6 +146,24 @@ class Region:
 
 		raise KeyError("Could not find a census block for this point.")
 
+	# Auxiliary function for image generation: find which districts are
+	# adjacent to each other. Returns a set, and only works horizontally.
+	def get_horiz_adjacent_districts(self, image_space_claimants):
+		different = set()
+
+		for row in image_space_claimants:
+			for diff_idx in np.where(row[:-1] != row[1:])[0]:
+				adjacent_districts = [row[diff_idx], row[diff_idx+1]]
+				adjacent_districts = tuple(sorted(adjacent_districts))
+
+				different.add(adjacent_districts)
+
+		return different
+
+	def get_adjacent_districts(self, image_space_claimants):
+		return self.get_horiz_adjacent_districts(image_space_claimants) \
+			| self.get_horiz_adjacent_districts(image_space_claimants.T)
+
 	# I'm not sure if this belongs here, but let's keep it here for now.
 	# If I'm going to keep it here, there's also the matter of it
 	# reimplementing create_grid from lp_district.py. TODO.
@@ -197,22 +216,36 @@ class Region:
 
 		print("Trying to find suitable colors.")
 
+		# We want adjacent districts to have different colors. And we want
+		# the district indices to all be nonnegative, so turn mixed claims
+		# or ones where we couldn't find the right district grey.
+		image_space_claimants[image_space_claimants==-1] = claimed_num_districts
+
+		adjacent_districts = self.get_adjacent_districts(
+			image_space_claimants)
+
 		while not suitable:
-			# Create some random colors.
+			# Create some random colors, and add a grey color for the
+			# mixed claims.
 			colors = np.random.randint(256, size = (claimed_num_districts, 3),
 				dtype=np.uint8)
+			# Must be cast to uint8, otherwise rgb2lab goes bananas.
+			# I love subtle bugs.
+			colors = np.vstack([colors,
+				np.array([180, 180, 180], dtype=np.uint8)])
+			lab_colors = rgb2lab(colors)
 
 			# Find the minimum pairwise distance between two colors.
 			# Inefficiently :-)
-			diffs = np.min([np.std(x-y) for x, y in permutations(colors, 2)])
+			adj_diffs = np.min([deltaE_ciede2000(lab_colors[idx_x], lab_colors[idx_y])
+				for idx_x, idx_y in adjacent_districts])
 
-			suitable = diffs > 8
+			global_diffs = np.min([deltaE_ciede2000(x, y)
+				for x, y in permutations(colors, 2)])
+
+			suitable = adj_diffs > 20 and global_diffs > 10
 
 		print("Found colors.")
-
-		# Color mixed claims grey.
-		colors = np.vstack([colors, [127, 127, 127]])
-		image_space_claimants[image_space_claimants==-1] = claimed_num_districts
 
 		# And save!
 		image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
