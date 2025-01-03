@@ -1,9 +1,12 @@
 from scipy.optimize import minimize_scalar, minimize, basinhopping
+import itertools
 import numpy as np
+from PIL import Image
 
 from spheregeom import *
 
 from region import Region
+from quant_tools import grid_dimensions
 
 # Simple implementation of local search weighted k-means on a census block
 # level. This takes a district list and weights their areas so that the
@@ -140,13 +143,63 @@ def fit_kmeans_weights(district_indices, region):
 	pop_penalty = np.std(district_pops) # standard deviation
 	pop_maxmin = np.max(district_pops)-np.min(district_pops)
 
-	return distance_penalty, pop_penalty, pop_maxmin, record_association
+	return distance_penalty, pop_penalty, pop_maxmin, record_association, weights
+
+# Write an image with an exact assignment of coordinates to districts.
+# These lines may cut through census blocks, which means that we can't be
+# sure that the population constraints hold, but, on the upside, the points
+# assigned to each district should exhibit geodesic convexity.
+
+# See the write_image function in region for more info. The function below
+# does duplicate a lot of its code, but it's less messy than dependency injection.
+
+def write_exact_image(filename, pixels, district_indices, district_weights,
+	region=colorado):
+
+	num_districts = len(district_indices)
+	aspect_ratio = region.get_aspect_ratio()
+	height, width, error = grid_dimensions(pixels, aspect_ratio)
+
+	img_lats = np.linspace(region.maximum_point[0], region.minimum_point[0], height)
+	img_lons = np.linspace(region.minimum_point[1], region.maximum_point[1], width)
+
+	# From lp_district.
+	grid_latlon = []
+
+	for lat, lon in itertools.product(img_lats, img_lons):
+		grid_latlon.append([lat, lon])
+
+	grid_latlon = np.array(grid_latlon)
+
+	district_sq_grid_distances = haversine_centers(
+		region.get_district_latlongs(district_indices), grid_latlon)**2
+
+	# Reweight the distances.
+
+	weights_col = district_weights.reshape(num_districts, 1)
+	weighted_square_dists = district_sq_grid_distances + weights_col
+
+	# Get the assignments and colors.
+
+	image_space_claimants = np.argmin(weighted_square_dists,
+		axis=0).reshape((height, width))
+	colors = region.get_colors(num_districts, image_space_claimants)
+
+	# And out we go.
+
+	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
+	image.save(filename, "PNG")
 
 def fit_and_print(district_indices, region=colorado):
-	distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
-		district_indices, region)
+	distance_penalty, pop_penalty, pop_maxmin, assignment, weights = \
+		fit_kmeans_weights(district_indices, region)
 
-	region.write_image(f"kmeans_out_{district_indices[0]}_pop{pop_maxmin}.png", assignment, 1000**2)
+	pixels = 1000**2
+
+	region.write_image(f"kmeans_out_{district_indices[0]}_pop{pop_maxmin}.png",
+		assignment, pixels)
+	write_exact_image(f"kmeans_exact_{district_indices[0]}_pop{pop_maxmin}.png",
+		pixels, district_indices, weights, region)
 
 	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(district_indices)}")
 
@@ -210,8 +263,8 @@ def test():
 				(34315, 77)}
 
 	for proposed_centers in centers_of_interest:
-		distance_penalty, pop_penalty, pop_maxmin, assignment = fit_kmeans_weights(
-			proposed_centers, colorado)
+		distance_penalty, pop_penalty, pop_maxmin, assignment, weights = \
+			fit_kmeans_weights(proposed_centers, colorado)
 
 		print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(proposed_centers)}")
 
@@ -230,4 +283,6 @@ def test():
 
 		print(f"Test {proposed_centers[0]}...: distance: {conditions[0]}, population: {conditions[1]}")
 
-test()
+#fit_and_print([225, 63184, 38506, 50062, 60497, 67073, 88665, 118614])
+
+#test()

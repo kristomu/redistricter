@@ -46,6 +46,9 @@ class Region:
 			self.minimum_point = np.minimum(self.minimum_point, coords)
 			self.maximum_point = np.maximum(self.maximum_point, coords)
 
+		self.block_latlongs = np.array(
+			[[block["lat"], block["long"]] for block in self.block_data])
+
 		self.block_populations = np.array(
 			[block["population"] for block in self.block_data])
 		self.total_population = np.sum(self.block_populations)
@@ -80,17 +83,14 @@ class Region:
 		self.boundary_tree = cKDTree(boundary_coords)
 		self.has_boundary_tree = True
 
-	def get_block_latlongs(self):
-		return np.array(
-			[[block["lat"], block["long"]] for block in self.block_data])
+	def get_district_latlongs(self, district_indices):
+		return np.array([self.block_latlongs[i] for i in district_indices])
 
 	def get_district_block_distances(self, district_indices):
-		block_latlongs = self.get_block_latlongs()
-
-		district_latlongs = [block_latlongs[i] for i in district_indices]
+		district_latlongs = self.get_district_latlongs(district_indices)
 
 		district_block_distances = haversine_centers(
-			district_latlongs, block_latlongs)
+			district_latlongs, self.block_latlongs)
 
 		return district_block_distances
 
@@ -164,6 +164,35 @@ class Region:
 		return self.get_horiz_adjacent_districts(image_space_claimants) \
 			| self.get_horiz_adjacent_districts(image_space_claimants.T)
 
+	def get_colors(self, claimed_num_districts, image_space_claimants):
+		adjacent_districts = self.get_adjacent_districts(
+			image_space_claimants)
+
+		suitable = False
+
+		while not suitable:
+			# Create some random colors, and add a grey color for the
+			# mixed claims.
+			colors = np.random.randint(256, size = (claimed_num_districts, 3),
+				dtype=np.uint8)
+			# Must be cast to uint8, otherwise rgb2lab goes bananas.
+			# I love subtle bugs.
+			colors = np.vstack([colors,
+				np.array([180, 180, 180], dtype=np.uint8)])
+			lab_colors = rgb2lab(colors)
+
+			# Find the minimum pairwise distance between two colors.
+			# Inefficiently :-)
+			adj_diffs = np.min([deltaE_ciede2000(lab_colors[idx_x], lab_colors[idx_y])
+				for idx_x, idx_y in adjacent_districts])
+
+			global_diffs = np.min([deltaE_ciede2000(x, y)
+				for x, y in permutations(colors, 2)])
+
+			suitable = adj_diffs > 20 and global_diffs > 10
+
+		return colors
+
 	# I'm not sure if this belongs here, but let's keep it here for now.
 	# If I'm going to keep it here, there's also the matter of it
 	# reimplementing create_grid from lp_district.py. TODO.
@@ -212,8 +241,6 @@ class Region:
 		image_space_claimants = np.array(image_space_claimants)
 		claimed_num_districts = np.max(image_space_claimants)+1
 
-		suitable = False
-
 		print("Trying to find suitable colors.")
 
 		# We want adjacent districts to have different colors. And we want
@@ -221,29 +248,8 @@ class Region:
 		# or ones where we couldn't find the right district grey.
 		image_space_claimants[image_space_claimants==-1] = claimed_num_districts
 
-		adjacent_districts = self.get_adjacent_districts(
+		colors = self.get_colors(claimed_num_districts,
 			image_space_claimants)
-
-		while not suitable:
-			# Create some random colors, and add a grey color for the
-			# mixed claims.
-			colors = np.random.randint(256, size = (claimed_num_districts, 3),
-				dtype=np.uint8)
-			# Must be cast to uint8, otherwise rgb2lab goes bananas.
-			# I love subtle bugs.
-			colors = np.vstack([colors,
-				np.array([180, 180, 180], dtype=np.uint8)])
-			lab_colors = rgb2lab(colors)
-
-			# Find the minimum pairwise distance between two colors.
-			# Inefficiently :-)
-			adj_diffs = np.min([deltaE_ciede2000(lab_colors[idx_x], lab_colors[idx_y])
-				for idx_x, idx_y in adjacent_districts])
-
-			global_diffs = np.min([deltaE_ciede2000(x, y)
-				for x, y in permutations(colors, 2)])
-
-			suitable = adj_diffs > 20 and global_diffs > 10
 
 		print("Found colors.")
 
