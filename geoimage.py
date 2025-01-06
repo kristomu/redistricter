@@ -12,6 +12,7 @@
 from PIL import Image
 import numpy as np
 import itertools
+from collections import defaultdict
 
 from region import Region
 from quant_tools import grid_dimensions
@@ -44,6 +45,9 @@ class GeoImage:
 
 		self.grid_latlon = np.array(self.grid_latlon)
 
+		# This is the image space assignment of districts to points,
+		# for the assignment method where every census block either has
+		# to be completely inside or outside.
 		self.image_space_claimants = []
 
 	@classmethod
@@ -102,19 +106,24 @@ class GeoImage:
 		print("Doing image space mapping.")
 
 		self.image_space_claimants = []
+		self.image_space_blocks = []
 
 		for img_lat_idx in tqdm(range(self.height)):
 			img_lat = self.img_lats[img_lat_idx]
 			image_space_line = []
+			image_space_blocks_line = []
 			for img_long in self.img_lons:
 				try:
 					block_idx = region.find_enclosing_block(img_lat, img_long)
 					claimant = block_assignment[block_idx]
 				except KeyError:
 					claimant = -1
+					block_idx = -1
 
 				image_space_line.append(claimant)
+				image_space_blocks_line.append(block_idx)
 			self.image_space_claimants.append(image_space_line)
+			self.image_space_blocks.append(image_space_blocks_line)
 
 		self.image_space_claimants = np.array(self.image_space_claimants)
 
@@ -134,6 +143,8 @@ class GeoImage:
 		# checking against it.)
 
 		self.find_enclosing_blocks(block_assignment, region)
+
+		# TODO: Find out why this is 9, not 8, for Colorado...
 		claimed_num_districts = np.max(self.image_space_claimants)+1
 
 		print("Trying to find suitable colors.")
@@ -154,10 +165,47 @@ class GeoImage:
 		image = Image.fromarray(colors[claimant_color_indices].astype(np.uint8))
 		image.save(filename, "PNG")
 
-	# TODO: Make a "estimate_population_difference" function that takes a claimant
-	# array and checks how it splits the different census blocks, thus determining
-	# an average case population difference based on each census block having uniform
-	# population density.
-	# Then if I want to be fancy, use linear programming to determine a worst-case
-	# population difference where all the population is on the wrong side of the
-	# divider.
+	# This estimates the population distribution based on a very simple
+	# model where each census block's population is equally distributed.
+	def estimate_population(self, proposed_image_space_claimants, region):
+
+		if len(self.image_space_claimants) == 0:
+			# TODO: Actually find enclosing blocks if it hasn't been done
+			# yet. But then we need the block assignments, which is going
+			# to be somewhat of a pain to pass around.
+			raise Exception("Missing census block assignment.")
+
+		num_districts = np.max(self.image_space_claimants)+1
+		num_blocks = len(region.block_data)
+
+		# We now count the number of image space points that each census block
+		# gives to each district as an approximation of relative volume. Since
+		# the image_space_claimants list lets us know the district any image
+		# point belongs to, and the image_space_blocks array lets us know
+		# what census block it is, this is just a matter of looking up stuff.
+
+		# TODO: Handle mixed claims. Not sure how I'm going to do that,
+		# though. Or just say outright that we don't support them.
+
+		points_assigned_to_block = np.zeros((num_blocks, num_districts))
+
+		for img_lat_idx in range(self.height):
+			for img_lon_idx in range(self.width):
+				block_idx = self.image_space_blocks[img_lat_idx][img_lon_idx]
+				proposed_district = proposed_image_space_claimants[
+					img_lat_idx][img_lon_idx]
+				# Discard points that are out of bounds.
+				# This also works as a hack for mixed claims and where we
+				# couldn't figure out what block belonged at the given point.
+				if proposed_district == -1:
+					continue
+
+				points_assigned_to_block[block_idx][proposed_district] += 1
+
+		# Normalize the relative volume for each census block.
+		relative_block_volume =  points_assigned_to_block / \
+			(points_assigned_to_block.sum(axis=1, keepdims=True) + 1e-6)
+
+		pops = (relative_block_volume.T * region.block_populations).T
+
+		return pops.sum(axis=0)

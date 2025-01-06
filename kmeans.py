@@ -159,24 +159,12 @@ def write_exact_image(filename, pixels, district_indices,
 	district_weights, geoimage, region=colorado):
 
 	num_districts = len(district_indices)
-	aspect_ratio = region.get_aspect_ratio()
-	height, width, error = grid_dimensions(pixels, aspect_ratio)
-
-	img_lats = np.linspace(region.maximum_point[0], region.minimum_point[0], height)
-	img_lons = np.linspace(region.minimum_point[1], region.maximum_point[1], width)
-
-	# From lp_district.
-	grid_latlon = []
-
-	for lat, lon in itertools.product(img_lats, img_lons):
-		grid_latlon.append([lat, lon])
-
-	grid_latlon = np.array(grid_latlon)
 
 	district_sq_grid_distances = haversine_centers(
-		region.get_district_latlongs(district_indices), grid_latlon)**2
+		region.get_district_latlongs(district_indices),
+		geoimage.grid_latlon)**2
 
-	# Reweight the distances.
+	# Adjust the distances to account for district weights.
 
 	weights_col = district_weights.reshape(num_districts, 1)
 	weighted_square_dists = district_sq_grid_distances + weights_col
@@ -184,13 +172,21 @@ def write_exact_image(filename, pixels, district_indices,
 	# Get the assignments and colors.
 
 	image_space_claimants = np.argmin(weighted_square_dists,
-		axis=0).reshape((height, width))
+		axis=0).reshape((geoimage.height, geoimage.width))
 	colors = geoimage.get_colors(num_districts, image_space_claimants)
 
 	# And out we go.
 
 	image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
 	image.save(filename, "PNG")
+
+	# Get some population distribution information.
+	# Looks like exact regions will have to be fitted separately,
+	# because this is pretty bad.
+	pop_distribution = geoimage.estimate_population(
+		image_space_claimants, region)
+
+	print("Population distribution (simple model): ", pop_distribution)
 
 def fit_and_print(district_indices, region=colorado):
 	distance_penalty, pop_penalty, pop_maxmin, assignment, weights = \
@@ -289,4 +285,4 @@ def test():
 
 #fit_and_print([225, 63184, 38506, 50062, 60497, 67073, 88665, 118614])
 
-#test()
+test()
