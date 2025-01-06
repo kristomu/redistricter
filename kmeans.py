@@ -8,6 +8,8 @@ from spheregeom import *
 from region import Region
 from quant_tools import grid_dimensions
 
+from geoimage import GeoImage
+
 # Simple implementation of local search weighted k-means on a census block
 # level. This takes a district list and weights their areas so that the
 # populations are close to equal. I might add a postprocessing step to make
@@ -153,8 +155,8 @@ def fit_kmeans_weights(district_indices, region):
 # See the write_image function in region for more info. The function below
 # does duplicate a lot of its code, but it's less messy than dependency injection.
 
-def write_exact_image(filename, pixels, district_indices, district_weights,
-	region=colorado):
+def write_exact_image(filename, pixels, district_indices,
+	district_weights, geoimage, region=colorado):
 
 	num_districts = len(district_indices)
 	aspect_ratio = region.get_aspect_ratio()
@@ -183,7 +185,7 @@ def write_exact_image(filename, pixels, district_indices, district_weights,
 
 	image_space_claimants = np.argmin(weighted_square_dists,
 		axis=0).reshape((height, width))
-	colors = region.get_colors(num_districts, image_space_claimants)
+	colors = geoimage.get_colors(num_districts, image_space_claimants)
 
 	# And out we go.
 
@@ -196,10 +198,12 @@ def fit_and_print(district_indices, region=colorado):
 
 	pixels = 1000**2
 
-	region.write_image(f"kmeans_out_{district_indices[0]}_pop{pop_maxmin}.png",
-		assignment, pixels)
+	geoimage = GeoImage.from_region(pixels, region)
+
+	geoimage.write_image(f"kmeans_out_{district_indices[0]}_pop{pop_maxmin}.png",
+		assignment, region)
 	write_exact_image(f"kmeans_exact_{district_indices[0]}_pop{pop_maxmin}.png",
-		pixels, district_indices, weights, region)
+		pixels, district_indices, weights, geoimage, region)
 
 	print(f"Distance: {distance_penalty:.4f} Pop. std.dev: {pop_penalty:.4f}, max-min: {pop_maxmin} for {str(district_indices)}")
 

@@ -98,7 +98,7 @@ class GeoImage:
 
 		return colors
 
-	def find_enclosing_blocks(self, assignment, region):
+	def find_enclosing_blocks(self, block_assignment, region):
 		print("Doing image space mapping.")
 
 		self.image_space_claimants = []
@@ -109,7 +109,7 @@ class GeoImage:
 			for img_long in self.img_lons:
 				try:
 					block_idx = region.find_enclosing_block(img_lat, img_long)
-					claimant = assignment[block_idx]
+					claimant = block_assignment[block_idx]
 				except KeyError:
 					claimant = -1
 
@@ -117,11 +117,10 @@ class GeoImage:
 			self.image_space_claimants.append(image_space_line)
 
 		self.image_space_claimants = np.array(self.image_space_claimants)
-		claimed_num_districts = np.max(self.image_space_claimants)+1
 
-	# Assignment is a list that, for each census block, gives what district
+	# Block_assignment is a list that, for each census block, gives what district
 	# that census block belongs to.
-	def write_image(self, filename, assignment, region):
+	def write_image(self, filename, block_assignment, region):
 		# XXX: Could use a Delaunay triangulation of the census blocks to check each
 		# image point against the closest census block center's neighbors. Suppose that
 		# a very large block is next to a quite small one, and the point is just inside
@@ -134,24 +133,25 @@ class GeoImage:
 		# region (state) itself. (Or extract a polygon for the state and use polygon
 		# checking against it.)
 
-		self.find_enclosing_blocks(assignment, region)
+		self.find_enclosing_blocks(block_assignment, region)
+		claimed_num_districts = np.max(self.image_space_claimants)+1
 
 		print("Trying to find suitable colors.")
 
-		# We want adjacent districts to have different colors. And we want
-		# the district indices to all be nonnegative, so turn mixed claims
-		# or ones where we couldn't find the right district grey.
-		# TODO: Don't scribble over stuff that may be used elsewhere.
-		# Fix later.
-		self.image_space_claimants[image_space_claimants==-1] = claimed_num_districts
+		# We want adjacent districts to have different colors, and we want
+		# the district indices to all be nonnegative, so make a copy of
+		# image space claimants where mixed claims are labeled with a
+		# positive value, so we can easily assign a color to it.
+		claimant_color_indices = self.image_space_claimants
+		claimant_color_indices[claimant_color_indices==-1] = claimed_num_districts
 
 		colors = self.get_colors(claimed_num_districts,
-			self.image_space_claimants)
+			claimant_color_indices)
 
 		print("Found colors.")
 
 		# And save!
-		image = Image.fromarray(colors[image_space_claimants].astype(np.uint8))
+		image = Image.fromarray(colors[claimant_color_indices].astype(np.uint8))
 		image.save(filename, "PNG")
 
 	# TODO: Make a "estimate_population_difference" function that takes a claimant
