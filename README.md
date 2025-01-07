@@ -2,7 +2,7 @@
 Redistricting program based on census data and linear optimization
 
 ## Requirements
-The current version uses .dbf files from the [TIGER2023 census block dataset.](https://www2.census.gov/geo/tiger/TIGER2023/TABBLOCK20/) as well as the [census integer to state names mapping.](https://www2.census.gov/geo/docs/reference/codes2020/national_state2020.txt)
+The current version uses .zip files from the [TIGER2023 census block dataset.](https://www2.census.gov/geo/tiger/TIGER2023/TABBLOCK20/) as well as the [census integer to state names mapping](https://www2.census.gov/geo/docs/reference/codes2020/national_state2020.txt) and the [US Census Bureau state boundary files.](https://www.census.gov/geographies/mapping-files/time-series/geo/carto-boundary-file.html)
 
 The Python implementation requires the [dbfread](https://dbfread.readthedocs.io/en/latest/) library, as well scipy and [CVXpy](https://www.cvxpy.org/) and scipy.
 
@@ -28,5 +28,4 @@ ambiguous areas at a higher resolution.
 
 The program creates a linear program for solving the low resolution problem, and then calls GLPK on it. This solves the assignment problem at low resolution.
 
-Rendering has not been implemented yet, nor has the iterative refinement
-strategy given above.
+The iterative refinement strategy given above has not been implemented.

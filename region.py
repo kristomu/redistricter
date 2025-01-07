@@ -5,7 +5,7 @@ from scipy.spatial import cKDTree, Delaunay
 import matplotlib.path as mpltPath # https://stackoverflow.com/questions/36399381/
 import numpy as np
 
-from parse_shape import get_state_names, get_census_block_data
+from parse_shape import *
 from spheregeom import *
 
 from collections import defaultdict
@@ -18,7 +18,8 @@ class Region:
 	# but significantly helps avoid unmapped points problems when writing
 	# output images.
 	def __init__(self, source_shapefile, create_boundary_tree=False):
-		self.state_names = state_names = get_state_names()
+
+		self.state_names = get_state_names()
 		self.block_data = get_census_block_data(source_shapefile,
 			self.state_names)
 
@@ -50,6 +51,11 @@ class Region:
 
 		block_coords = [x["coords"] for x in self.block_data]
 		self.block_tree = cKDTree(block_coords)
+
+		# Create a mpath for the state border.
+		state_name = self.block_data[0]["State"]
+		self.state_boundary = [ mpltPath.Path(polygon_list)
+			for polygon_list in get_state_polygon(state_name)]
 
 		# Get boundary coordinates and make a tree for them; hopefully
 		# this should improve nearest neighbor searches.
@@ -101,7 +107,15 @@ class Region:
 
 	# Determine if a point is inside a bounding polygon of the given
 	# census block.
+	def is_in_state(self, lat, lon):
+		for state_polygon in self.state_boundary:
+			if state_polygon.contains_points([[lat, lon]]):
+				return True
+		return False
+
 	def is_in_block(self, lat, lon, block_idx):
+		if not self.is_in_state(lat, lon):
+			return False
 		for boundary in self.block_data[block_idx]["boundaries"]:
 			boundary_poly = mpltPath.Path(boundary)
 			if boundary_poly.contains_points([[lat, lon]]):

@@ -117,6 +117,11 @@ class GeoImage:
 			image_space_blocks_line = []
 
 			for img_long in self.img_lons:
+				if not region.is_in_state(img_lat, img_long):
+					# HACK
+					image_space_blocks_line.append(-2)
+					continue
+
 				try:
 					block_idx = region.find_enclosing_block(img_lat, img_long)
 				except KeyError:
@@ -183,14 +188,22 @@ class GeoImage:
 		# positive value, so we can easily assign a color to it.
 		claimant_color_indices = claimants
 		claimant_color_indices[claimant_color_indices==-1] = claimed_num_districts
+		claimant_color_indices[claimant_color_indices==-2] = claimed_num_districts+1
 
 		colors = self.get_colors(claimed_num_districts,
 			claimant_color_indices)
 
+		# Add full alpha.
+		colors = np.c_[colors, 255 * np.ones(len(colors))]
+
+		# Append a transparent color for out-of-region areas.
+		colors = np.vstack([colors, [0, 0, 0, 0]])
+
 		print("Found colors.")
 
 		# And save!
-		image = Image.fromarray(colors[claimant_color_indices].astype(np.uint8))
+		image = Image.fromarray(colors[claimant_color_indices].astype(np.uint8),
+			'RGBA')
 		image.save(filename, "PNG")
 
 	# This estimates the population distribution based on a very simple

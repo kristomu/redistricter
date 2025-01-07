@@ -57,3 +57,25 @@ def get_census_block_data(sf_filename, state_names):
 			"boundaries": boundaries})
 
 	return data_list
+
+def get_state_polygon(state_name, state_filename="cb_2018_us_state_500k.zip"):
+	sf = shapefile.Reader(state_filename)
+
+	geo_dict = sf.shapeRecords().__geo_interface__
+
+	if geo_dict["type"] != "FeatureCollection":
+		raise ValueError("Shapefile is not a feature collection")
+
+	for record_and_geometry in geo_dict["features"]:
+		name = record_and_geometry["properties"]["NAME"]
+
+		if name.lower() != state_name.lower():
+			continue
+
+		boundaries_longlat = record_and_geometry["geometry"]["coordinates"]
+		boundaries = []
+
+		for boundary_longlat in boundaries_longlat:
+			boundaries.append(np.array([[lat, lon] for lon,lat in boundary_longlat]))
+
+		return boundaries
