@@ -45,10 +45,8 @@ class GeoImage:
 
 		self.grid_latlon = np.array(self.grid_latlon)
 
-		# This is the image space assignment of districts to points,
-		# for the assignment method where every census block either has
-		# to be completely inside or outside.
-		self.image_space_claimants = []
+		# This is the mapping of points in image space to census blocks.
+		self.image_space_blocks = []
 
 	@classmethod
 	def from_region(self, pixels, region):
@@ -102,30 +100,48 @@ class GeoImage:
 
 		return colors
 
-	def find_enclosing_blocks(self, block_assignment, region):
-		print("Doing image space mapping.")
+	# Determine what census block covers each image space point.
+	# This is used to draw redistricting solutions where each block is
+	# either fully part of a district or not at all, and for estimating
+	# district populations for solutions that cut across census blocks.
+	# It's only really valid for high resolution GeoImages because I don't
+	# support having multiple districts in one point yet.
+	def map_census_blocks(self, region):
+		print("Mapping census blocks to image space.")
 
-		self.image_space_claimants = []
 		self.image_space_blocks = []
 
 		for img_lat_idx in tqdm(range(self.height)):
 			img_lat = self.img_lats[img_lat_idx]
-			image_space_line = []
+
 			image_space_blocks_line = []
+
 			for img_long in self.img_lons:
 				try:
 					block_idx = region.find_enclosing_block(img_lat, img_long)
-					claimant = block_assignment[block_idx]
 				except KeyError:
-					claimant = -1
 					block_idx = -1
 
-				image_space_line.append(claimant)
 				image_space_blocks_line.append(block_idx)
-			self.image_space_claimants.append(image_space_line)
 			self.image_space_blocks.append(image_space_blocks_line)
 
-		self.image_space_claimants = np.array(self.image_space_claimants)
+		self.image_space_blocks = np.array(self.image_space_blocks)
+
+	def get_enclosing_blocks(self, block_assignment, region):
+		# If we don't have the census block-image space mapping
+		# yet, get it. TODO: Support different regions, e.g.
+		# by naming the originator of the mapping.
+		if len(self.image_space_blocks) == 0:
+			self.map_census_blocks(region)
+
+		claimants = np.copy(self.image_space_blocks)
+
+		# Look up the assignment of every image space point
+		# that is nonnegative (thus not an error or mixed point).
+		claimants[claimants >= 0] = block_assignment[
+			claimants[claimants >= 0]]
+
+		return claimants
 
 	# Block_assignment is a list that, for each census block, gives what district
 	# that census block belongs to.
@@ -142,10 +158,9 @@ class GeoImage:
 		# region (state) itself. (Or extract a polygon for the state and use polygon
 		# checking against it.)
 
-		self.find_enclosing_blocks(block_assignment, region)
-
-		# TODO: Find out why this is 9, not 8, for Colorado...
-		claimed_num_districts = np.max(self.image_space_claimants)+1
+		claimants = self.get_enclosing_blocks(block_assignment, region)
+		
+		claimed_num_districts = np.max(claimants)+1
 
 		print("Trying to find suitable colors.")
 
@@ -153,7 +168,7 @@ class GeoImage:
 		# the district indices to all be nonnegative, so make a copy of
 		# image space claimants where mixed claims are labeled with a
 		# positive value, so we can easily assign a color to it.
-		claimant_color_indices = self.image_space_claimants
+		claimant_color_indices = claimants
 		claimant_color_indices[claimant_color_indices==-1] = claimed_num_districts
 
 		colors = self.get_colors(claimed_num_districts,
@@ -169,13 +184,10 @@ class GeoImage:
 	# model where each census block's population is equally distributed.
 	def estimate_population(self, proposed_image_space_claimants, region):
 
-		if len(self.image_space_claimants) == 0:
-			# TODO: Actually find enclosing blocks if it hasn't been done
-			# yet. But then we need the block assignments, which is going
-			# to be somewhat of a pain to pass around.
-			raise Exception("Missing census block assignment.")
+		if len(self.image_space_blocks) == 0:
+			self.map_census_blocks(region)
 
-		num_districts = np.max(self.image_space_claimants)+1
+		num_districts = np.max(proposed_image_space_claimants)+1
 		num_blocks = len(region.block_data)
 
 		# We now count the number of image space points that each census block
