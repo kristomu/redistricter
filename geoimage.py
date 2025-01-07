@@ -127,6 +127,19 @@ class GeoImage:
 
 		self.image_space_blocks = np.array(self.image_space_blocks)
 
+		# Calculate approximate population per image space square,
+		# assuming even distribution.
+		self.image_space_population = np.zeros(
+			self.image_space_blocks.shape)
+
+		num_blocks = len(region.block_data)
+		claimed_squares = np.unique(self.image_space_blocks, return_counts=True)
+
+		for block_idx, block_count in np.array(claimed_squares).T:
+			pop_per_square = region.block_populations[block_idx]/block_count
+			self.image_space_population[self.image_space_blocks==block_idx] = \
+				pop_per_square
+
 	def get_enclosing_blocks(self, block_assignment, region):
 		# If we don't have the census block-image space mapping
 		# yet, get it. TODO: Support different regions, e.g.
@@ -159,7 +172,7 @@ class GeoImage:
 		# checking against it.)
 
 		claimants = self.get_enclosing_blocks(block_assignment, region)
-		
+
 		claimed_num_districts = np.max(claimants)+1
 
 		print("Trying to find suitable colors.")
@@ -190,34 +203,10 @@ class GeoImage:
 		num_districts = np.max(proposed_image_space_claimants)+1
 		num_blocks = len(region.block_data)
 
-		# We now count the number of image space points that each census block
-		# gives to each district as an approximation of relative volume. Since
-		# the image_space_claimants list lets us know the district any image
-		# point belongs to, and the image_space_blocks array lets us know
-		# what census block it is, this is just a matter of looking up stuff.
+		populations = []
 
-		# TODO: Handle mixed claims. Not sure how I'm going to do that,
-		# though. Or just say outright that we don't support them.
+		for d in range(num_districts):
+			populations.append(np.sum(self.image_space_population[
+				proposed_image_space_claimants==d]))
 
-		points_assigned_to_block = np.zeros((num_blocks, num_districts))
-
-		for img_lat_idx in range(self.height):
-			for img_lon_idx in range(self.width):
-				block_idx = self.image_space_blocks[img_lat_idx][img_lon_idx]
-				proposed_district = proposed_image_space_claimants[
-					img_lat_idx][img_lon_idx]
-				# Discard points that are out of bounds.
-				# This also works as a hack for mixed claims and where we
-				# couldn't figure out what block belonged at the given point.
-				if proposed_district == -1:
-					continue
-
-				points_assigned_to_block[block_idx][proposed_district] += 1
-
-		# Normalize the relative volume for each census block.
-		relative_block_volume =  points_assigned_to_block / \
-			(points_assigned_to_block.sum(axis=1, keepdims=True) + 1e-6)
-
-		pops = (relative_block_volume.T * region.block_populations).T
-
-		return pops.sum(axis=0)
+		return np.array(populations)
