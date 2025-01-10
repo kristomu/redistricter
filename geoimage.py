@@ -21,6 +21,9 @@ from tqdm import tqdm
 
 from skimage.color import rgb2lab, deltaE_ciede2000
 
+MIXED_OR_UNKNOWN = -1
+OUT_OF_BOUNDS = -2
+
 class GeoImage:
 	def __init__(self, minimum_point, maximum_point,
 		pixels, aspect_ratio):
@@ -61,6 +64,13 @@ class GeoImage:
 		for row in image_space_claimants:
 			for diff_idx in np.where(row[:-1] != row[1:])[0]:
 				adjacent_districts = [row[diff_idx], row[diff_idx+1]]
+
+				# Don't count districts that are at the edge of the
+				# region as adjacent to another just because it's next
+				# to an out-of-bounds area.
+				if OUT_OF_BOUNDS in adjacent_districts:
+					continue
+
 				adjacent_districts = tuple(sorted(adjacent_districts))
 
 				different.add(adjacent_districts)
@@ -71,21 +81,19 @@ class GeoImage:
 		return self.get_horiz_adjacent_districts(image_space_claimants) \
 			| self.get_horiz_adjacent_districts(image_space_claimants.T)
 
-	def get_colors(self, claimed_num_districts, image_space_claimants):
+	def get_colors(self, claimed_num_districts, image_space_claimants,
+		iters=10000):
+
 		adjacent_districts = self.get_adjacent_districts(
 			image_space_claimants)
 
-		suitable = False
+		suitability_record = 0
+		record_colors = None
 
-		while not suitable:
-			# Create some random colors, and add a grey color for the
-			# mixed claims.
+		for i in range(iters):
+			# Create some random colors.
 			colors = np.random.randint(256, size = (claimed_num_districts, 3),
 				dtype=np.uint8)
-			# Must be cast to uint8, otherwise rgb2lab goes bananas.
-			# I love subtle bugs.
-			colors = np.vstack([colors,
-				np.array([180, 180, 180], dtype=np.uint8)])
 			lab_colors = rgb2lab(colors)
 
 			# Find the minimum pairwise distance between two colors.
@@ -96,9 +104,11 @@ class GeoImage:
 			global_diffs = np.min([deltaE_ciede2000(x, y)
 				for x, y in itertools.permutations(colors, 2)])
 
-			suitable = adj_diffs > 20 and global_diffs > 10
+			candidate_suitability = adj_diffs * 10 + global_diffs * 20
+			if candidate_suitability > suitability_record:
+				record_colors = colors
 
-		return colors
+		return record_colors
 
 	# Determine what census block covers each image space point.
 	# This is used to draw redistricting solutions where each block is
@@ -118,14 +128,15 @@ class GeoImage:
 
 			for img_long in self.img_lons:
 				if not region.is_in_state(img_lat, img_long):
-					# HACK
-					image_space_blocks_line.append(-2)
+					# Record that this pixel is outside the region's
+					# boundaries.
+					image_space_blocks_line.append(OUT_OF_BOUNDS)
 					continue
 
 				try:
 					block_idx = region.find_enclosing_block(img_lat, img_long)
 				except KeyError:
-					block_idx = -1
+					block_idx = MIXED_OR_UNKNOWN
 
 				image_space_blocks_line.append(block_idx)
 			self.image_space_blocks.append(image_space_blocks_line)
@@ -182,16 +193,23 @@ class GeoImage:
 
 		print("Trying to find suitable colors.")
 
-		# We want adjacent districts to have different colors, and we want
-		# the district indices to all be nonnegative, so make a copy of
-		# image space claimants where mixed claims are labeled with a
-		# positive value, so we can easily assign a color to it.
-		claimant_color_indices = claimants
-		claimant_color_indices[claimant_color_indices==-1] = claimed_num_districts
-		claimant_color_indices[claimant_color_indices==-2] = claimed_num_districts+1
-
 		colors = self.get_colors(claimed_num_districts,
-			claimant_color_indices)
+			claimants)
+
+		# Create a color indices array that gives the special "districts"
+		# (MIXED_UNKNOWN and OUT_OF_BOUNDS) positive values, and
+		# then add the colors grey and transparent respectively
+		# to them.
+		claimant_color_indices = claimants
+		claimant_color_indices[
+			claimant_color_indices==MIXED_OR_UNKNOWN] = claimed_num_districts
+		claimant_color_indices[
+			claimant_color_indices==OUT_OF_BOUNDS] = claimed_num_districts+1
+
+		# Must be cast to uint8, otherwise rgb2lab goes bananas.
+		# I love subtle bugs.
+		colors = np.vstack([colors,
+			np.array([180, 180, 180], dtype=np.uint8)])
 
 		# Add full alpha.
 		colors = np.c_[colors, 255 * np.ones(len(colors))]
