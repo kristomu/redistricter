@@ -82,7 +82,7 @@ class GeoImage:
 			| self.get_horiz_adjacent_districts(image_space_claimants.T)
 
 	def get_colors(self, claimed_num_districts, image_space_claimants,
-		iters=10000):
+		iters=200):
 
 		adjacent_districts = self.get_adjacent_districts(
 			image_space_claimants)
@@ -90,9 +90,9 @@ class GeoImage:
 		suitability_record = 0
 		record_colors = None
 
-		for i in range(iters):
+		for i in tqdm(range(iters)):
 			# Create some random colors.
-			colors = np.random.randint(256, size = (claimed_num_districts, 3),
+			colors=np.random.randint(256, size=(claimed_num_districts, 3),
 				dtype=np.uint8)
 			lab_colors = rgb2lab(colors)
 
@@ -107,6 +107,7 @@ class GeoImage:
 			candidate_suitability = adj_diffs * 10 + global_diffs * 20
 			if candidate_suitability > suitability_record:
 				record_colors = colors
+				suitability_record = candidate_suitability
 
 		return record_colors
 
