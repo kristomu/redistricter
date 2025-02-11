@@ -26,6 +26,10 @@ ambiguous areas at a higher resolution.
 
 ## What has been implemented so far
 
-The program creates a linear program for solving the low resolution problem, and then calls GLPK on it. This solves the assignment problem at low resolution.
+lp\_district.py finds reasonable district centers using mixed-integer
+programming with cvxpy. kmeans.py optimizes these to make populations as close
+to equal as possible.
 
-The iterative refinement strategy given above has not been implemented.
+I tried iterative refinement in lp\_quadtree.py, but it did not work well. More
+work needs to be done if it's to be viable. For now, using kmeans to enforce
+the population constraint seems to work.
